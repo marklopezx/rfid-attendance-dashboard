@@ -54,31 +54,30 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#090d16] flex items-center justify-center p-6 relative overflow-hidden selection:bg-sky-500 selection:text-white">
-      {/* Aesthetic Mesh Gradient Background Orbs */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-gradient-to-tr from-sky-600/15 to-indigo-600/15 rounded-full blur-[120px] pointer-events-none"></div>
-      <div className="absolute bottom-10 right-10 w-96 h-96 bg-purple-600/10 rounded-full blur-[100px] pointer-events-none"></div>
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 relative overflow-hidden selection:bg-blue-200">
+      {/* Ambient Decorative Background */}
+      <div className="absolute top-0 left-0 w-full h-[400px] bg-gradient-to-b from-blue-900/10 to-transparent pointer-events-none z-0"></div>
 
-      {/* Main Glassmorphic Card */}
-      <div className="max-w-md w-full bg-slate-900/60 backdrop-blur-2xl p-8 sm:p-10 rounded-3xl border border-white/10 shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] relative z-10 transition-all duration-300">
+      {/* Main Card */}
+      <div className="max-w-md w-full bg-white/90 backdrop-blur-xl p-8 sm:p-10 rounded-3xl border border-slate-200/60 shadow-sm relative z-10 transition-all duration-300">
         {/* Top Header Badge & Title */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/10 border border-sky-500/20 text-sky-400 text-xs font-medium mb-6 tracking-wide uppercase">
-            <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse"></span>
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 border border-blue-100 text-blue-900 text-xs font-bold uppercase tracking-wider mb-4 shadow-sm">
+            <span className="w-2 h-2 rounded-full bg-blue-900 animate-pulse"></span>
             Secure Portal
           </div>
 
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-blue-950">
             Welcome back
           </h1>
-          <p className="text-slate-400 text-sm mt-1.5 font-normal">
+          <p className="text-slate-500 text-sm mt-1.5 font-medium">
             Smart Classroom RFID Dashboard
           </p>
         </div>
 
         {/* Error Notification */}
         {error && (
-          <div className="bg-rose-500/10 border border-rose-500/20 text-rose-300 px-4 py-3 rounded-xl text-sm mb-6 text-center backdrop-blur-md animate-shake">
+          <div className="bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-xl text-sm font-bold mb-6 text-center shadow-sm">
             {error}
           </div>
         )}
@@ -86,7 +85,7 @@ export default function LoginPage() {
         {/* Form Inputs */}
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-2 tracking-wide">
+            <label className="block text-sm font-bold text-slate-700 mb-2">
               Email address
             </label>
             <input
@@ -94,14 +93,14 @@ export default function LoginPage() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-slate-950/80 border border-white/10 rounded-xl px-4 py-3.5 text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 outline-none transition-all duration-200 text-sm font-light shadow-inner"
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-slate-900 placeholder-slate-400 focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 outline-none transition-all duration-200 text-base shadow-inner"
               placeholder="name@institution.edu"
             />
           </div>
 
           <div>
             <div className="flex justify-between items-center mb-2">
-              <label className="block text-xs font-medium text-slate-300 tracking-wide">
+              <label className="block text-sm font-bold text-slate-700">
                 Password
               </label>
             </div>
@@ -110,7 +109,7 @@ export default function LoginPage() {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-slate-950/80 border border-white/10 rounded-xl px-4 py-3.5 text-slate-100 placeholder-slate-600 focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 outline-none transition-all duration-200 text-sm font-light shadow-inner"
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-slate-900 placeholder-slate-400 focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 outline-none transition-all duration-200 text-base shadow-inner"
               placeholder="••••••••••••"
             />
           </div>
@@ -118,12 +117,12 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-medium py-3.5 px-4 rounded-xl transition-all duration-200 mt-6 shadow-lg shadow-sky-500/20 hover:shadow-sky-500/30 active:scale-[0.99] disabled:opacity-50 cursor-pointer text-sm tracking-wide"
+            className="w-full bg-gradient-to-r from-blue-900 to-indigo-900 hover:from-blue-950 hover:to-indigo-950 text-white font-bold py-4 px-4 rounded-2xl transition-all duration-200 mt-6 shadow-[0_8px_20px_rgba(30,58,138,0.3)] hover:shadow-[0_10px_25px_rgba(30,58,138,0.4)] active:scale-[0.99] disabled:opacity-50 cursor-pointer text-base"
           >
             {loading ? (
               <span className="flex items-center justify-center gap-2">
                 <svg
-                  className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
+                  className="animate-spin -ml-1 mr-2 h-5 w-5 text-white"
                   fill="none"
                   viewBox="0 0 24 24"
                 >
@@ -150,8 +149,8 @@ export default function LoginPage() {
         </form>
 
         {/* Footer info */}
-        <div className="mt-8 text-center border-t border-white/5 pt-6">
-          <p className="text-[11px] text-slate-500 tracking-wider uppercase font-medium">
+        <div className="mt-8 text-center border-t border-slate-100 pt-6">
+          <p className="text-xs text-slate-400 tracking-wider uppercase font-bold">
             Authorized Personnel Only
           </p>
         </div>

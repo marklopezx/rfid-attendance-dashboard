@@ -21,11 +21,17 @@ interface AttendanceLog {
     first_name?: string;
     last_name?: string;
     middle_name?: string;
-    full_name?: string; // Fallback for old records
+    full_name?: string;
     program: string;
     section: string;
     year_level: string | number;
   };
+}
+
+interface TerminalData {
+  device_id: string;
+  is_active: boolean;
+  last_seen: string | null;
 }
 
 type SortKey =
@@ -37,6 +43,14 @@ type SortKey =
   | "subject"
   | "status";
 type SortConfigType = { key: SortKey; direction: "asc" | "desc" } | null;
+
+// Only showing your actual built hardware scanner (add others here as you build them)
+const AVAILABLE_ROOMS = [
+  { id: "Smart_Classroom_1", name: "Smart Classroom 1" },
+  { id: "Smart_Classroom_2", name: "Smart Classroom 2" },
+  { id: "Smart_Classroom_3", name: "Smart Classroom 3" },
+  { id: "Smart_Classroom_4", name: "Smart Classroom 4" },
+];
 
 // Helper: Format time to AM/PM
 const formatTimeAMPM = (timeStr: string) => {
@@ -100,6 +114,7 @@ export default function TeacherDashboard() {
 
   // Session Control State
   const [isClassActive, setIsClassActive] = useState(false);
+  const [selectedDevice, setSelectedDevice] = useState(AVAILABLE_ROOMS[0].id);
   const [inputSubject, setInputSubject] = useState("");
   const [inputStartTime, setInputStartTime] = useState("");
   const [inputEndTime, setInputEndTime] = useState("");
@@ -111,7 +126,11 @@ export default function TeacherDashboard() {
 
   // Data State
   const [logs, setLogs] = useState<AttendanceLog[]>([]);
+  const [terminals, setTerminals] = useState<TerminalData[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Live ticking clock for tracking scanner offline status
+  const [nowTime, setNowTime] = useState<number>(() => Date.now());
 
   // Filter States
   const today = new Date().toISOString().split("T")[0];
@@ -156,14 +175,17 @@ export default function TeacherDashboard() {
       const savedSubjects = localStorage.getItem(`teacher_subjects_${email}`);
       if (savedSubjects) setSubjectHistory(JSON.parse(savedSubjects));
 
+      // Find if this specific teacher currently has an active session running in ANY room
       const { data: activeClass } = await supabase
         .from("active_classes")
         .select("*")
-        .eq("device_id", "Smart_Classroom_1")
-        .single();
+        .eq("teacher_email", email)
+        .eq("is_active", true)
+        .maybeSingle();
 
-      if (activeClass && activeClass.is_active) {
+      if (activeClass) {
         setIsClassActive(true);
+        setSelectedDevice(activeClass.device_id); // Set the dropdown to the room they are using
         setInputSubject(activeClass.subject || "");
         if (activeClass.subject) setFilterSubject(activeClass.subject);
       }
@@ -175,14 +197,26 @@ export default function TeacherDashboard() {
     if (isAuthenticating) return;
     let isMounted = true;
 
-    async function pollLogs(isInitial = false) {
+    async function fetchSystemData(isInitial = false) {
       try {
         if (isInitial && isMounted) setLoading(true);
-        const res = await fetch("/api/logs");
-        const data = await res.json();
-        if (isMounted && data.success) setLogs(data.logs);
+
+        // Fetch both the logs AND the active hardware terminals status concurrently
+        const [logsRes, { data: activeData }] = await Promise.all([
+          fetch("/api/logs"),
+          supabase
+            .from("active_classes")
+            .select("device_id, is_active, last_seen"),
+        ]);
+
+        const logsData = await logsRes.json();
+
+        if (isMounted) {
+          if (logsData.success) setLogs(logsData.logs);
+          if (activeData) setTerminals(activeData);
+        }
       } catch (error) {
-        console.error("Failed to sync logs", error);
+        console.error("Failed to sync system data", error);
         if (isMounted && isInitial)
           showToast("Failed to connect to live stream.", "error");
       } finally {
@@ -190,11 +224,14 @@ export default function TeacherDashboard() {
       }
     }
 
-    pollLogs(true);
-    const intervalId = setInterval(() => pollLogs(false), 3000);
+    fetchSystemData(true);
+    const dataInterval = setInterval(() => fetchSystemData(false), 3000);
+    const timeInterval = setInterval(() => setNowTime(Date.now()), 1000);
+
     return () => {
       isMounted = false;
-      clearInterval(intervalId);
+      clearInterval(dataInterval);
+      clearInterval(timeInterval);
     };
   }, [isAuthenticating]);
 
@@ -228,6 +265,18 @@ export default function TeacherDashboard() {
     showToast(`Removed "${subjectToRemove}" from history.`, "info");
   };
 
+  // Check if the currently selected room is online (Timezone safe)
+  const isSelectedDeviceOnline = useMemo(() => {
+    const terminal = terminals.find((t) => t.device_id === selectedDevice);
+    if (!terminal || !terminal.last_seen) return false;
+
+    let lastSeenTime = new Date(terminal.last_seen).getTime();
+    if (lastSeenTime > nowTime + 3600000) lastSeenTime -= 8 * 60 * 60 * 1000;
+
+    const diffSeconds = (nowTime - lastSeenTime) / 1000;
+    return diffSeconds >= -2 && diffSeconds < 18;
+  }, [terminals, selectedDevice, nowTime]);
+
   const handleToggleClass = async (turnOn: boolean) => {
     if (turnOn && (!inputSubject.trim() || !inputStartTime || !inputEndTime)) {
       showToast("Please specify the Subject and the Class Schedule.", "error");
@@ -244,6 +293,7 @@ export default function TeacherDashboard() {
       saveToHistory(inputSubject.trim());
     }
 
+    // Update the active status specifically for the room selected in the dropdown
     const { error } = await supabase
       .from("active_classes")
       .update({
@@ -253,10 +303,13 @@ export default function TeacherDashboard() {
         teacher_email: turnOn ? userEmail : null,
         end_time: endTimestamp,
       })
-      .eq("device_id", "Smart_Classroom_1");
+      .eq("device_id", selectedDevice);
 
     if (error) {
-      showToast("Database error. Check permissions.", "error");
+      showToast(
+        `Database error updating room ${selectedDevice}. Check permissions.`,
+        "error",
+      );
       return;
     }
 
@@ -264,12 +317,18 @@ export default function TeacherDashboard() {
 
     if (turnOn) {
       setFilterSubject(inputSubject.trim());
-      showToast("Class session started successfully!", "success");
+      showToast(
+        `Class session started successfully in ${selectedDevice.replace(/_/g, " ")}!`,
+        "success",
+      );
     } else {
       setInputSubject("");
       setInputStartTime("");
       setInputEndTime("");
-      showToast("Class session ended.", "info");
+      showToast(
+        `Class session ended for ${selectedDevice.replace(/_/g, " ")}.`,
+        "info",
+      );
     }
   };
 
@@ -514,8 +573,49 @@ export default function TeacherDashboard() {
               : "bg-white border-slate-200 shadow-sm"
           }`}
         >
-          <div className="flex flex-col xl:flex-row items-center justify-between gap-8">
-            <div className="flex-1 w-full grid grid-cols-1 sm:grid-cols-2 gap-8 xl:pr-10">
+          <div className="flex flex-col xl:flex-row items-center justify-between gap-6">
+            <div className="flex-1 w-full grid grid-cols-1 md:grid-cols-3 gap-6 xl:pr-10">
+              {/* ROOM SELECTION INPUT */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">
+                  Select Room / Scanner
+                </label>
+                <select
+                  value={selectedDevice}
+                  onChange={(e) => setSelectedDevice(e.target.value)}
+                  disabled={isClassActive}
+                  className={`w-full border rounded-xl px-4 py-3.5 text-base font-bold outline-none disabled:opacity-60 focus:ring-4 focus:ring-blue-900/15 shadow-inner transition-all appearance-none ${
+                    isSelectedDeviceOnline
+                      ? "bg-emerald-50 border-emerald-200 text-emerald-700 focus:border-emerald-500"
+                      : "bg-rose-50 border-rose-200 text-rose-600 focus:border-rose-500"
+                  }`}
+                >
+                  {AVAILABLE_ROOMS.map((room) => {
+                    const term = terminals.find((t) => t.device_id === room.id);
+                    let isRoomOnline = false;
+                    if (term && term.last_seen) {
+                      let lastSeenTime = new Date(term.last_seen).getTime();
+                      if (lastSeenTime > nowTime + 3600000)
+                        lastSeenTime -= 8 * 60 * 60 * 1000;
+                      isRoomOnline = (nowTime - lastSeenTime) / 1000 < 18;
+                    }
+                    return (
+                      <option
+                        key={room.id}
+                        value={room.id}
+                        className={
+                          isRoomOnline
+                            ? "text-emerald-700 font-bold bg-white"
+                            : "text-rose-600 font-bold bg-white"
+                        }
+                      >
+                        {room.name} {isRoomOnline ? "(Online)" : "(Offline)"}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
               {/* SUBJECT INPUT */}
               <div className="relative">
                 <label className="block text-sm font-bold text-slate-700 mb-2">
@@ -616,9 +716,16 @@ export default function TeacherDashboard() {
               ) : (
                 <button
                   onClick={() => handleToggleClass(true)}
-                  className="w-full bg-gradient-to-r from-blue-900 to-indigo-900 hover:from-blue-950 hover:to-indigo-950 text-white font-bold py-4 px-8 rounded-2xl shadow-[0_8px_20px_rgba(30,58,138,0.3)] hover:shadow-[0_10px_25px_rgba(30,58,138,0.4)] transition-all transform hover:-translate-y-0.5"
+                  disabled={!isSelectedDeviceOnline}
+                  className={`w-full font-bold py-4 px-8 rounded-2xl shadow-[0_8px_20px_rgba(30,58,138,0.3)] transition-all transform ${
+                    isSelectedDeviceOnline
+                      ? "bg-gradient-to-r from-blue-900 to-indigo-900 hover:from-blue-950 hover:to-indigo-950 text-white hover:-translate-y-0.5 hover:shadow-[0_10px_25px_rgba(30,58,138,0.4)] cursor-pointer"
+                      : "bg-slate-200 border-slate-300 text-slate-400 cursor-not-allowed shadow-none"
+                  }`}
                 >
-                  Start Class Session
+                  {isSelectedDeviceOnline
+                    ? "Start Class Session"
+                    : "Scanner Offline - Cannot Start"}
                 </button>
               )}
             </div>
