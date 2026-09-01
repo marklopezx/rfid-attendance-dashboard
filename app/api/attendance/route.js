@@ -27,22 +27,7 @@ export async function POST(request) {
     // Clean up the incoming RFID UID
     rfid_uid = String(rfid_uid).trim().toUpperCase();
 
-    // 1. CHECK IF CLASS IS ACTIVE
-    const { data: activeClass } = await supabase
-      .from("active_classes")
-      .select("*")
-      .eq("device_id", currentDevice)
-      .single();
-
-    if (!activeClass || !activeClass.is_active) {
-      return NextResponse.json({
-        success: false,
-        status: "error",
-        message: "No Class Active",
-      });
-    }
-
-    // 2. Find the student
+    // 1. Fetch all students to check matching
     const { data: students, error: studentError } = await supabase
       .from("students")
       .select(
@@ -66,14 +51,74 @@ export async function POST(request) {
       );
     });
 
+    // 2. CHECK IF CLASS IS ACTIVE
+    const { data: activeClass } = await supabase
+      .from("active_classes")
+      .select("*")
+      .eq("device_id", currentDevice)
+      .maybeSingle();
+
+    const isClassRunning = activeClass && activeClass.is_active;
+
+    // 3. IF CARD IS UNREGISTERED
     if (!student) {
-      return NextResponse.json(
-        { success: false, status: "error", message: "Unregistered Card" },
-        { status: 404 },
+      // If a class session is running, strictly reject unknown cards!
+      if (isClassRunning) {
+        return NextResponse.json(
+          { success: false, status: "error", message: "Unregistered Card" },
+          { status: 404 },
+        );
+      }
+
+      // If NO class session is running, automatically assign this card to the first student missing a UID!
+      const targetStudent = students.find(
+        (s) => !s.rfid_uid || s.rfid_uid.trim() === "",
       );
+
+      if (targetStudent) {
+        const { error: updateError } = await supabase
+          .from("students")
+          .update({ rfid_uid: rfid_uid })
+          .eq("id", targetStudent.id);
+
+        if (updateError) {
+          return NextResponse.json(
+            {
+              success: false,
+              status: "error",
+              message: "Failed to assign card",
+            },
+            { status: 500 },
+          );
+        }
+
+        return NextResponse.json({
+          success: true,
+          status: "assigned",
+          message: `Assigned to ${targetStudent.first_name} ${targetStudent.last_name}`,
+        });
+      } else {
+        return NextResponse.json(
+          {
+            success: false,
+            status: "error",
+            message: "No students need cards",
+          },
+          { status: 400 },
+        );
+      }
     }
 
-    // 3. Time & Spam Prevention (Philippine Time UTC+8)
+    // 4. IF STUDENT IS FOUND, BUT NO CLASS IS ACTIVE
+    if (!isClassRunning) {
+      return NextResponse.json({
+        success: false,
+        status: "error",
+        message: "No Class Active",
+      });
+    }
+
+    // 5. Time & Spam Prevention (Philippine Time UTC+8)
     const now = new Date();
     const phTime = new Date(now.getTime() + 8 * 60 * 60 * 1000);
     const todayDate = phTime.toISOString().split("T")[0];
@@ -103,7 +148,7 @@ export async function POST(request) {
       });
     }
 
-    // 4. INSERT THE TAP
+    // 6. INSERT THE ATTENDANCE TAP
     const { error: insertError } = await supabase.from("attendance").insert([
       {
         student_id: student.id,
@@ -120,7 +165,6 @@ export async function POST(request) {
 
     const displayName = formatStudentName(student);
 
-    // RETURN MULTIPLE SUCCESS KEYS FOR MAXIMUM HARDWARE COMPATIBILITY
     return NextResponse.json({
       success: true,
       status: "success",

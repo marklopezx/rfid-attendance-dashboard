@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
@@ -12,12 +12,10 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 // Helper to format the name consistently
 const formatStudentName = (student) => {
   if (!student) return "Unknown";
-  // If the new separated schema exists:
   if (student.last_name && student.first_name) {
     const middle = student.middle_name ? ` ${student.middle_name}` : "";
     return `${student.last_name}, ${student.first_name}${middle}`.trim();
   }
-  // Fallback for older records that might still only have full_name
   return student.full_name || "Unknown";
 };
 
@@ -41,9 +39,11 @@ export default function StudentsPage() {
   // Search State
   const [searchTerm, setSearchTerm] = useState("");
 
+  // Scan-to-Assign Mode State
+  const [isScanMode, setIsScanMode] = useState(false);
+
   // Fetch ordered alphabetically by Last Name
   const fetchStudents = useCallback(async () => {
-    setLoading(true);
     const { data, error } = await supabase
       .from("students")
       .select("*")
@@ -74,6 +74,74 @@ export default function StudentsPage() {
     checkUser();
   }, [router, fetchStudents]);
 
+  // 2. Auto-refresh the student list when Scan Mode is active to catch new card assignments live
+  useEffect(() => {
+    if (!isScanMode) return;
+    const interval = setInterval(() => {
+      fetchStudents();
+    }, 1500); // Check every 1.5 seconds
+    return () => clearInterval(interval);
+  }, [isScanMode, fetchStudents]);
+
+  // --- CSV UPLOAD LOGIC ---
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const text = event.target.result;
+      const rows = text
+        .split(/\r?\n/)
+        .map((row) => row.trim())
+        .filter(Boolean);
+
+      const newStudents = [];
+      for (let i = 1; i < rows.length; i++) {
+        const cols = rows[i].split(",").map((c) => c.trim());
+        if (cols.length >= 7) {
+          newStudents.push({
+            student_number: cols[0],
+            last_name: cols[1],
+            first_name: cols[2],
+            middle_name: cols[3] || null,
+            program: cols[4],
+            year_level: parseInt(cols[5]) || 1,
+            section: cols[6],
+            rfid_uid: null,
+          });
+        }
+      }
+
+      if (newStudents.length > 0) {
+        setLoading(true);
+        const { error } = await supabase.from("students").insert(newStudents);
+        if (error) {
+          alert("Database Error: " + error.message);
+        } else {
+          alert(
+            `Success! Imported ${newStudents.length} blank student profiles.`,
+          );
+          fetchStudents();
+        }
+        setLoading(false);
+      } else {
+        alert("No valid rows found. Check your CSV formatting.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = null;
+  };
+
+  // Find the ID of the student currently waiting for a scan so we can highlight them
+  const activeTargetId = useMemo(() => {
+    if (!isScanMode) return null;
+    const target = students.find(
+      (s) => !s.rfid_uid || s.rfid_uid.trim() === "",
+    );
+    return target ? target.id : null;
+  }, [isScanMode, students]);
+
   const handleAddStudent = async (e) => {
     e.preventDefault();
     setSubmitting(true);
@@ -87,7 +155,7 @@ export default function StudentsPage() {
         program: program.trim(),
         year_level: yearLevel.trim(),
         section: section.trim(),
-        rfid_uid: rfidUid.trim(),
+        rfid_uid: rfidUid.trim() || null,
       },
     ]);
 
@@ -280,11 +348,10 @@ export default function StudentsPage() {
                 </label>
                 <input
                   type="text"
-                  required
-                  placeholder="e.g., A3 B2 C1 4D"
+                  placeholder="Leave blank to assign via scanner"
                   value={rfidUid}
                   onChange={(e) => setRfidUid(e.target.value)}
-                  className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm font-mono font-bold text-blue-900 outline-none focus:border-blue-900 shadow-sm transition-all"
+                  className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm font-mono font-bold text-blue-900 outline-none focus:border-blue-900 shadow-sm transition-all placeholder:font-sans placeholder:font-normal"
                 />
               </div>
 
@@ -293,14 +360,14 @@ export default function StudentsPage() {
                 disabled={submitting}
                 className="w-full bg-gradient-to-r from-blue-900 to-indigo-900 hover:from-blue-950 hover:to-indigo-950 text-white font-bold py-3.5 px-4 rounded-xl shadow-[0_8px_20px_rgba(30,58,138,0.3)] transition-all text-sm tracking-wide mt-4 cursor-pointer disabled:opacity-50"
               >
-                {submitting ? "Registering..." : "Save Student & Card"}
+                {submitting ? "Registering..." : "Save Student Profile"}
               </button>
             </form>
           </div>
 
           {/* COLUMN 2 & 3: STUDENT DIRECTORY TABLE */}
-          <div className="lg:col-span-2 bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm">
-            <div className="p-6 sm:p-8 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div className="lg:col-span-2 bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm flex flex-col">
+            <div className="p-6 sm:p-8 border-b border-slate-100 bg-slate-50/50 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
               <div>
                 <h2 className="text-2xl font-extrabold text-blue-950 tracking-tight">
                   Registered Directory
@@ -310,12 +377,50 @@ export default function StudentsPage() {
                 </p>
               </div>
 
+              <div className="flex flex-col sm:flex-row gap-3 w-full xl:w-auto">
+                {/* Hidden File Input for CSV */}
+                <input
+                  type="file"
+                  id="csv-upload"
+                  accept=".csv"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                />
+                <button
+                  onClick={() => document.getElementById("csv-upload").click()}
+                  className="bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold px-4 py-2.5 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  Upload CSV
+                </button>
+
+                <button
+                  onClick={() => setIsScanMode(!isScanMode)}
+                  className={`font-bold px-4 py-2.5 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2 cursor-pointer ${
+                    isScanMode
+                      ? "bg-rose-600 hover:bg-rose-700 text-white shadow-[0_8px_20px_rgba(225,29,72,0.3)]"
+                      : "bg-blue-900 hover:bg-blue-950 text-white shadow-[0_8px_20px_rgba(30,58,138,0.3)]"
+                  }`}
+                >
+                  {isScanMode ? (
+                    <>
+                      <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>{" "}
+                      Stop Scan Mode
+                    </>
+                  ) : (
+                    "Scan Cards Mode"
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Search Bar Row */}
+            <div className="px-6 py-4 border-b border-slate-100 bg-white">
               <input
                 type="text"
                 placeholder="Search by name, number, or RFID..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-800 outline-none focus:border-blue-900 shadow-sm w-full sm:w-72 transition-all"
+                className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-800 outline-none focus:border-blue-900 shadow-inner w-full transition-all"
               />
             </div>
 
@@ -351,38 +456,58 @@ export default function StudentsPage() {
                       </td>
                     </tr>
                   ) : (
-                    filteredStudents.map((s) => (
-                      <tr
-                        key={s.id}
-                        className="hover:bg-blue-50/50 transition-colors"
-                      >
-                        <td className="p-5 font-mono text-blue-900 font-bold">
-                          {s.student_number}
-                        </td>
-                        <td className="p-5 font-bold text-slate-900">
-                          {formatStudentName(s)}
-                        </td>
-                        <td className="p-5 text-slate-600 font-medium">
-                          {s.program}
-                        </td>
-                        <td className="p-5">
-                          <span className="bg-slate-100 px-3 py-1.5 rounded-md border border-slate-200/60 text-slate-700 font-bold whitespace-nowrap shadow-sm">
-                            Yr {s.year_level} • {s.section}
-                          </span>
-                        </td>
-                        <td className="p-5 font-mono text-slate-500 font-bold">
-                          {s.rfid_uid}
-                        </td>
-                        <td className="p-5 text-right">
-                          <button
-                            onClick={() => handleDelete(s.id)}
-                            className="text-rose-600 hover:text-rose-700 text-xs font-bold bg-rose-50 hover:bg-rose-100 px-3.5 py-2 rounded-xl border border-rose-200 transition-all cursor-pointer shadow-sm"
-                          >
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                    filteredStudents.map((s) => {
+                      const isTarget = isScanMode && s.id === activeTargetId;
+
+                      return (
+                        <tr
+                          key={s.id}
+                          className={`transition-colors ${
+                            isTarget
+                              ? "bg-blue-50/80 border-l-4 border-blue-900"
+                              : "hover:bg-blue-50/40"
+                          }`}
+                        >
+                          <td className="p-5 font-mono text-blue-900 font-bold">
+                            {s.student_number}
+                          </td>
+                          <td className="p-5 font-bold text-slate-900">
+                            {formatStudentName(s)}
+                          </td>
+                          <td className="p-5 text-slate-600 font-medium">
+                            {s.program}
+                          </td>
+                          <td className="p-5">
+                            <span className="bg-slate-100 px-3 py-1.5 rounded-md border border-slate-200/60 text-slate-700 font-bold whitespace-nowrap shadow-sm">
+                              Yr {s.year_level} • {s.section}
+                            </span>
+                          </td>
+                          <td className="p-5 font-mono font-bold">
+                            {s.rfid_uid ? (
+                              <span className="text-slate-600">
+                                {s.rfid_uid}
+                              </span>
+                            ) : isTarget ? (
+                              <span className="text-blue-700 animate-pulse flex items-center gap-2">
+                                ⏳ Tap card now...
+                              </span>
+                            ) : (
+                              <span className="text-slate-300 italic">
+                                Blank
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-5 text-right">
+                            <button
+                              onClick={() => handleDelete(s.id)}
+                              className="text-rose-600 hover:text-rose-700 text-xs font-bold bg-rose-50 hover:bg-rose-100 px-3.5 py-2 rounded-xl border border-rose-200 transition-all cursor-pointer shadow-sm"
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
