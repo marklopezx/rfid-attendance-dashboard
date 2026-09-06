@@ -160,6 +160,8 @@ export default function TeacherDashboard() {
 
   // Table Expansion States
   const [isStreamExpanded, setIsStreamExpanded] = useState(false);
+  const [isRosterExpanded, setIsRosterExpanded] = useState(false);
+  const [isReportExpanded, setIsReportExpanded] = useState(false);
 
   // Data State
   const [logs, setLogs] = useState<AttendanceLog[]>([]);
@@ -187,10 +189,19 @@ export default function TeacherDashboard() {
   const [settingsPassword, setSettingsPassword] = useState("");
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
-  // Filter States
+  // Filter States - Live Stream
   const today = new Date().toISOString().split("T")[0];
   const [selectedDate, setSelectedDate] = useState(today);
   const [streamSearchTerm, setStreamSearchTerm] = useState("");
+
+  // Filter States - Reports Tab
+  const [reportDate, setReportDate] = useState(today);
+  const [selectedReportSubject, setSelectedReportSubject] =
+    useState<SubjectData | null>(null);
+  const [reportEnrolledStudents, setReportEnrolledStudents] = useState<
+    EnrolledStudent[]
+  >([]);
+  const [reportSearchTerm, setReportSearchTerm] = useState("");
 
   const showToast = useCallback(
     (message: string, type: "success" | "error" | "info" = "info") => {
@@ -219,24 +230,12 @@ export default function TeacherDashboard() {
     if (data) setAllStudents(data);
   }, []);
 
+  // Fetch roster for Dashboard / Subjects tab
   const fetchRoster = useCallback(async (subjectId: number) => {
     const { data, error } = await supabase
       .from("subject_enrollments")
       .select(
-        `
-        id,
-        students (
-          id,
-          student_number,
-          first_name,
-          last_name,
-          middle_name,
-          program,
-          year_level,
-          section,
-          rfid_uid
-        )
-      `,
+        `id, students ( id, student_number, first_name, last_name, middle_name, program, year_level, section, rfid_uid )`,
       )
       .eq("subject_id", subjectId);
 
@@ -252,6 +251,30 @@ export default function TeacherDashboard() {
         })
         .filter((s): s is EnrolledStudent => Boolean(s));
       setEnrolledStudents(formattedRoster);
+    }
+  }, []);
+
+  // Fetch roster specifically for the Reports tab
+  const fetchReportRoster = useCallback(async (subjectId: number) => {
+    const { data, error } = await supabase
+      .from("subject_enrollments")
+      .select(
+        `id, students ( id, student_number, first_name, last_name, middle_name, program, year_level, section, rfid_uid )`,
+      )
+      .eq("subject_id", subjectId);
+
+    if (!error && data) {
+      const formattedRoster = (
+        data as unknown as Array<{
+          students: EnrolledStudent | EnrolledStudent[] | null;
+        }>
+      )
+        .map((item) => {
+          if (Array.isArray(item.students)) return item.students[0] || null;
+          return item.students;
+        })
+        .filter((s): s is EnrolledStudent => Boolean(s));
+      setReportEnrolledStudents(formattedRoster);
     }
   }, []);
 
@@ -479,6 +502,10 @@ export default function TeacherDashboard() {
         setEnrolledStudents([]);
         setInputSubject("");
       }
+      if (selectedReportSubject?.id === subjectToDelete.id) {
+        setSelectedReportSubject(null);
+        setReportEnrolledStudents([]);
+      }
       fetchSubjects(userEmail);
       showToast("Subject and roster deleted successfully.", "info");
     } else {
@@ -505,6 +532,9 @@ export default function TeacherDashboard() {
       }
     } else {
       fetchRoster(selectedSubject.id);
+      if (selectedReportSubject?.id === selectedSubject.id) {
+        fetchReportRoster(selectedSubject.id);
+      }
       showToast("Student enrolled successfully!", "success");
     }
   };
@@ -520,6 +550,9 @@ export default function TeacherDashboard() {
 
     if (!error) {
       fetchRoster(selectedSubject.id);
+      if (selectedReportSubject?.id === selectedSubject.id) {
+        fetchReportRoster(selectedSubject.id);
+      }
       showToast("Student removed from roster.", "info");
     } else {
       showToast("Failed to remove student.", "error");
@@ -595,16 +628,15 @@ export default function TeacherDashboard() {
     [logs, userEmail],
   );
 
+  // --- LIVE DASHBOARD LOGIC ---
   const activeStreamRows = useMemo(() => {
     let result = [];
 
-    // 1. ALL SUBJECTS VIEW
     if (!selectedSubject) {
       result = teacherLogs.filter(
         (log) => log.attendance_date === selectedDate,
       );
     } else {
-      // 2. SPECIFIC SUBJECT VIEW - Match subject name and exact section
       const dateLogs = teacherLogs.filter((log) => {
         if (
           log.attendance_date !== selectedDate ||
@@ -631,7 +663,6 @@ export default function TeacherDashboard() {
       });
 
       const mapRows = new Map<string, AttendanceLog>();
-
       const hasClassOccurred =
         isClassActive || hasSessionRunToday || dateLogs.length > 0;
 
@@ -667,7 +698,6 @@ export default function TeacherDashboard() {
       result = Array.from(mapRows.values());
     }
 
-    // Apply Name / Student Number Search Filter
     if (streamSearchTerm.trim()) {
       const termLower = streamSearchTerm.toLowerCase();
       result = result.filter(
@@ -679,12 +709,10 @@ export default function TeacherDashboard() {
       );
     }
 
-    // Sorting
     if (sortConfig) {
       result = [...result].sort((a, b) => {
         const { key, direction } = sortConfig;
         const modifier = direction === "asc" ? 1 : -1;
-
         switch (key) {
           case "time":
             return (
@@ -744,12 +772,138 @@ export default function TeacherDashboard() {
     hasSessionRunToday,
   ]);
 
+  // --- REPORTS TAB LOGIC ---
+  const reportRows = useMemo(() => {
+    let result = [];
+
+    if (!selectedReportSubject) {
+      result = teacherLogs.filter((log) => log.attendance_date === reportDate);
+    } else {
+      const dateLogs = teacherLogs.filter((log) => {
+        if (
+          log.attendance_date !== reportDate ||
+          log.subject !== selectedReportSubject.subject_name
+        ) {
+          return false;
+        }
+        const logSec = log.section ? String(log.section).trim() : null;
+        const targetSec = selectedReportSubject.section
+          ? String(selectedReportSubject.section).trim()
+          : null;
+        return logSec === targetSec;
+      });
+
+      const scannedMap = new Map<string, AttendanceLog>();
+      dateLogs.forEach((log) => {
+        const studId = log.students?.id || log.student_id;
+        if (studId) {
+          const existing = scannedMap.get(String(studId));
+          if (!existing || log.status === "Present") {
+            scannedMap.set(String(studId), log);
+          }
+        }
+      });
+
+      const mapRows = new Map<string, AttendanceLog>();
+      const hasClassOccurred =
+        dateLogs.length > 0 ||
+        (reportDate === today && (isClassActive || hasSessionRunToday));
+
+      reportEnrolledStudents.forEach((s) => {
+        const existingLog = scannedMap.get(String(s.id));
+        const defaultTime = existingLog
+          ? existingLog.attendance_time
+          : hasClassOccurred
+            ? "00:00:00"
+            : "";
+        const defaultStatus = existingLog
+          ? existingLog.status
+          : hasClassOccurred
+            ? "Absent"
+            : "";
+
+        mapRows.set(s.id, {
+          id: existingLog ? existingLog.id : `report_pending_${s.id}`,
+          attendance_date: reportDate,
+          attendance_time: defaultTime,
+          status: defaultStatus,
+          subject: selectedReportSubject.subject_name,
+          section: selectedReportSubject.section || null,
+          device_id: existingLog ? existingLog.device_id : "",
+          teacher_email: userEmail,
+          student_id: s.id,
+          students: s,
+        });
+      });
+
+      result = Array.from(mapRows.values());
+    }
+
+    if (reportSearchTerm.trim()) {
+      const termLower = reportSearchTerm.toLowerCase();
+      result = result.filter(
+        (log) =>
+          formatStudentName(log.students).toLowerCase().includes(termLower) ||
+          (log.students?.student_number || "")
+            .toLowerCase()
+            .includes(termLower),
+      );
+    }
+
+    result = [...result].sort((a, b) => {
+      const nameA = formatStudentName(a.students).toLowerCase();
+      const nameB = formatStudentName(b.students).toLowerCase();
+      return nameA.localeCompare(nameB);
+    });
+
+    return result;
+  }, [
+    selectedReportSubject,
+    teacherLogs,
+    reportDate,
+    reportEnrolledStudents,
+    reportSearchTerm,
+    userEmail,
+    today,
+    isClassActive,
+    hasSessionRunToday,
+  ]);
+
+  const reportStats = useMemo(() => {
+    let present = 0;
+    let absent = 0;
+
+    if (!selectedReportSubject) {
+      reportRows.forEach((log) => {
+        if (log.status === "Present") present++;
+        else if (log.status === "Absent") absent++;
+      });
+      const total = reportRows.length;
+      return {
+        total,
+        present,
+        absent,
+        rate:
+          total > 0 ? Math.round((present / (present + absent)) * 100) || 0 : 0,
+      };
+    }
+
+    reportRows.forEach((log) => {
+      if (log.status === "Present") present++;
+      else if (log.status === "Absent") absent++;
+    });
+
+    const total = reportRows.length;
+    const rate = total > 0 ? Math.round((present / total) * 100) : 0;
+
+    return { present, absent, total, rate };
+  }, [reportRows, selectedReportSubject]);
+
   const exportToCSV = () => {
     if (activeStreamRows.length === 0) {
       showToast("No attendance records to export!", "error");
       return;
     }
-
     const headers = [
       "Date",
       "Time",
@@ -786,13 +940,61 @@ export default function TeacherDashboard() {
     link.href = URL.createObjectURL(blob);
     link.setAttribute(
       "download",
-      `Attendance_${selectedDate}_${selectedSubject ? selectedSubject.subject_name : "AllSubjects"}.csv`,
+      `LiveDashboard_${selectedDate}_${selectedSubject ? selectedSubject.subject_name : "AllSubjects"}.csv`,
     );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-
     showToast("CSV Exported successfully!", "success");
+  };
+
+  const exportReportsToCSV = () => {
+    if (reportRows.length === 0) {
+      showToast("No historical reports found to export!", "error");
+      return;
+    }
+    const headers = [
+      "Date",
+      "Time",
+      "Student Number",
+      "Student Name",
+      "Program",
+      "Year Level",
+      "Section",
+      "Subject",
+      "Status",
+    ];
+    const csvRows = reportRows.map((log) =>
+      [
+        log.attendance_date,
+        log.status === "Absent"
+          ? "N/A"
+          : log.attendance_time && log.attendance_time !== "00:00:00"
+            ? formatTimeAMPM(log.attendance_time)
+            : "—",
+        log.students?.student_number || "Unknown",
+        `"${formatStudentName(log.students)}"`,
+        `"${log.students?.program || "Unknown"}"`,
+        log.students?.year_level || "N/A",
+        `"${log.students?.section || "Unknown"}"`,
+        `"${log.subject || "N/A"}"`,
+        log.status || "—",
+      ].join(","),
+    );
+
+    const blob = new Blob([[headers.join(","), ...csvRows].join("\n")], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute(
+      "download",
+      `Attendance_Report_${reportDate}_${selectedReportSubject ? selectedReportSubject.subject_name : "All"}.csv`,
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast("Report Exported successfully!", "success");
   };
 
   const availableStudentsForEnrollment = useMemo(() => {
@@ -1495,9 +1697,11 @@ export default function TeacherDashboard() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch flex-1 min-h-0">
-                <div className="lg:col-span-5 flex flex-col gap-6 h-full min-h-[500px]">
-                  <div className="shrink-0 bg-white rounded-3xl border border-slate-200/80 p-7 shadow-sm relative overflow-hidden">
+              {/* Grid layout */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+                {/* LEFT COLUMN: Create New Subject & My Subjects Box */}
+                <div className="lg:col-span-5 flex flex-col gap-6">
+                  <div className="bg-white rounded-3xl border border-slate-200/80 p-7 shadow-sm relative overflow-hidden">
                     <div className="absolute top-0 right-0 w-32 h-32 bg-blue-50 rounded-bl-full pointer-events-none -z-0"></div>
                     <h3 className="text-lg font-extrabold text-blue-950 mb-5 relative z-10 flex items-center gap-2.5">
                       <span className="w-2.5 h-2.5 rounded-full bg-blue-900"></span>
@@ -1545,7 +1749,8 @@ export default function TeacherDashboard() {
                     </form>
                   </div>
 
-                  <div className="flex-1 flex flex-col min-h-0 bg-white rounded-3xl border border-slate-200/80 p-7 shadow-sm">
+                  {/* My Subjects box with fixed max height and internal scroll */}
+                  <div className="bg-white rounded-3xl border border-slate-200/80 p-7 shadow-sm flex flex-col max-h-[460px]">
                     <div className="shrink-0 flex items-center justify-between mb-5">
                       <h3 className="text-lg font-extrabold text-blue-950 flex items-center gap-2.5">
                         <span className="w-2.5 h-2.5 rounded-full bg-blue-900"></span>
@@ -1566,7 +1771,7 @@ export default function TeacherDashboard() {
                         </p>
                       </div>
                     ) : (
-                      <div className="flex-1 overflow-y-auto pr-1 space-y-3">
+                      <div className="overflow-y-auto pr-1 space-y-3 max-h-[340px]">
                         {subjects.map((sub) => {
                           const isSelected = selectedSubject?.id === sub.id;
                           return (
@@ -1617,7 +1822,8 @@ export default function TeacherDashboard() {
                   </div>
                 </div>
 
-                <div className="lg:col-span-7 flex flex-col h-full min-h-[500px] bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden">
+                {/* RIGHT COLUMN: Active Course / Roster Box (Slightly taller height max-h-[480px]) */}
+                <div className="lg:col-span-7 flex flex-col bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden">
                   {selectedSubject ? (
                     <>
                       <div className="shrink-0 p-7 sm:p-8 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -1689,7 +1895,10 @@ export default function TeacherDashboard() {
                           )}
                       </div>
 
-                      <div className="flex-1 overflow-x-auto w-full min-h-0 bg-white">
+                      {/* Clean Roster Table Container with Extended Height (max-h-[480px]) */}
+                      <div
+                        className={`overflow-x-auto w-full transition-all duration-300 ${!isRosterExpanded ? "max-h-[480px] overflow-y-auto" : "h-auto"}`}
+                      >
                         <table className="w-full text-left border-collapse">
                           <thead className="sticky top-0 bg-white z-10 shadow-sm">
                             <tr className="bg-blue-900/10 text-blue-950 text-xs font-bold uppercase tracking-wider border-b border-blue-900/20">
@@ -1699,7 +1908,7 @@ export default function TeacherDashboard() {
                               <th className="p-4 px-6 text-right">Action</th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-slate-100 text-sm">
+                          <tbody className="divide-y divide-slate-100 text-sm bg-white">
                             {enrolledStudents.length === 0 ? (
                               <tr>
                                 <td
@@ -1749,6 +1958,21 @@ export default function TeacherDashboard() {
                           </tbody>
                         </table>
                       </div>
+
+                      {enrolledStudents.length > 8 && (
+                        <div className="bg-slate-50 border-t border-slate-100 p-2.5 flex justify-center">
+                          <button
+                            onClick={() =>
+                              setIsRosterExpanded(!isRosterExpanded)
+                            }
+                            className="text-xs font-bold text-blue-900 bg-white border border-blue-200 hover:bg-blue-50 px-6 py-2 rounded-full transition-all cursor-pointer shadow-sm"
+                          >
+                            {isRosterExpanded
+                              ? "▲ Show Less"
+                              : "▼ Show More Records"}
+                          </button>
+                        </div>
+                      )}
                     </>
                   ) : (
                     <div className="p-20 text-center text-slate-400 my-auto flex flex-col items-center justify-center">
@@ -1772,22 +1996,329 @@ export default function TeacherDashboard() {
           {/* TAB 3: REPORTS */}
           {activeTab === "reports" && (
             <div className="space-y-6 animate-fade-in-up">
-              <div className="mb-6">
-                <h1 className="text-3xl sm:text-4xl font-extrabold text-blue-950 tracking-tight">
-                  Attendance Reports
-                </h1>
-                <p className="text-slate-500 text-base mt-2 font-medium">
-                  View past dates, review attendance logs, and export records.
-                </p>
+              {/* Report Header */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white border border-slate-200/80 rounded-3xl p-8 shadow-sm">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-900 text-xs font-bold uppercase tracking-wider mb-3">
+                    Historical Data
+                  </div>
+                  <h1 className="text-3xl sm:text-4xl font-extrabold text-blue-950 tracking-tight">
+                    Attendance Reports
+                  </h1>
+                  <p className="text-slate-500 text-base mt-1 font-medium">
+                    Generate exact attendance sheets, view accurate statistics,
+                    and export records.
+                  </p>
+                </div>
+                <button
+                  onClick={exportReportsToCSV}
+                  disabled={reportRows.length === 0}
+                  className="bg-blue-900 hover:bg-blue-950 text-white font-bold py-3.5 px-6 rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <span className="text-xl">📥</span> Export Report
+                </button>
               </div>
-              <div className="p-12 bg-white border border-slate-200 rounded-3xl text-center shadow-sm">
-                <span className="text-6xl mb-4 block">📊</span>
-                <h3 className="text-xl font-bold text-blue-950">
-                  Reporting Engine Ready
-                </h3>
-                <p className="text-slate-500 mt-2 max-w-md mx-auto">
-                  Use the Live Classroom tab to export daily CSV logs instantly.
-                </p>
+
+              {/* Filtering Controls */}
+              <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm grid grid-cols-1 sm:grid-cols-3 gap-4 relative z-10">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                    Report Date
+                  </label>
+                  <input
+                    type="date"
+                    value={reportDate}
+                    onChange={(e) => setReportDate(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-medium text-slate-800 outline-none focus:border-blue-900 shadow-inner cursor-pointer"
+                    style={{ colorScheme: "light" }}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5 flex items-center gap-2">
+                    Select Subject
+                    {!selectedReportSubject && (
+                      <span className="text-[10px] text-rose-500 bg-rose-50 px-2 py-0.5 rounded-full font-bold">
+                        Required for full stats
+                      </span>
+                    )}
+                  </label>
+                  <select
+                    value={
+                      selectedReportSubject
+                        ? selectedReportSubject.id.toString()
+                        : "All"
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === "All") {
+                        setSelectedReportSubject(null);
+                        setReportEnrolledStudents([]);
+                      } else {
+                        const found = subjects.find(
+                          (s) => s.id.toString() === val,
+                        );
+                        if (found) {
+                          setSelectedReportSubject(found);
+                          fetchReportRoster(found.id);
+                        }
+                      }
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-medium text-slate-800 outline-none focus:border-blue-900 shadow-inner cursor-pointer"
+                  >
+                    <option value="All">All Subjects (Raw Logs Only)</option>
+                    {subjects.map((subj) => (
+                      <option key={subj.id} value={subj.id.toString()}>
+                        {subj.subject_name}{" "}
+                        {subj.section ? `(Sec: ${subj.section})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                    Search Student
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Name or ID..."
+                    value={reportSearchTerm}
+                    onChange={(e) => setReportSearchTerm(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-medium text-slate-800 outline-none focus:border-blue-900 shadow-inner transition-all placeholder-slate-400"
+                  />
+                </div>
+              </div>
+
+              {/* Top Level Summary Statistics */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl shrink-0 shadow-inner">
+                    👥
+                  </div>
+                  <div className="truncate">
+                    <p className="text-[10px] sm:text-xs font-extrabold text-slate-400 uppercase tracking-wider">
+                      {selectedReportSubject ? "Total Enrolled" : "Total Scans"}
+                    </p>
+                    <p className="text-xl sm:text-2xl font-black text-blue-950 truncate">
+                      {reportStats.total}
+                    </p>
+                  </div>
+                </div>
+                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl shrink-0 shadow-inner">
+                    ✅
+                  </div>
+                  <div className="truncate">
+                    <p className="text-[10px] sm:text-xs font-extrabold text-slate-400 uppercase tracking-wider">
+                      Present
+                    </p>
+                    <p className="text-xl sm:text-2xl font-black text-emerald-700 truncate">
+                      {reportStats.present}
+                    </p>
+                  </div>
+                </div>
+                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4 opacity-100 transition-opacity">
+                  <div
+                    className={`w-12 h-12 rounded-2xl ${selectedReportSubject ? "bg-rose-50 text-rose-600" : "bg-slate-50 text-slate-400"} flex items-center justify-center text-xl shrink-0 shadow-inner`}
+                  >
+                    ❌
+                  </div>
+                  <div className="truncate">
+                    <p className="text-[10px] sm:text-xs font-extrabold text-slate-400 uppercase tracking-wider">
+                      Absent
+                    </p>
+                    <p
+                      className={`text-xl sm:text-2xl font-black truncate ${selectedReportSubject ? "text-rose-700" : "text-slate-400"}`}
+                    >
+                      {selectedReportSubject ? reportStats.absent : "--"}
+                    </p>
+                  </div>
+                </div>
+                <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
+                  <div
+                    className={`w-12 h-12 rounded-2xl ${selectedReportSubject ? "bg-indigo-50 text-indigo-600" : "bg-slate-50 text-slate-400"} flex items-center justify-center text-xl shrink-0 shadow-inner`}
+                  >
+                    📈
+                  </div>
+                  <div className="truncate">
+                    <p className="text-[10px] sm:text-xs font-extrabold text-slate-400 uppercase tracking-wider">
+                      Attendance Rate
+                    </p>
+                    <p
+                      className={`text-xl sm:text-2xl font-black truncate ${selectedReportSubject ? "text-indigo-700" : "text-slate-400"}`}
+                    >
+                      {selectedReportSubject ? `${reportStats.rate}%` : "--"}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Warning Banner if No Subject Selected */}
+              {!selectedReportSubject && (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center gap-3 shadow-sm">
+                  <span className="text-amber-500 text-xl">⚠️</span>
+                  <p className="text-amber-800 text-sm font-medium">
+                    You are viewing raw logs for{" "}
+                    <span className="font-bold">All Subjects</span>. To
+                    accurately track and calculate <strong>Absent</strong>{" "}
+                    students based on your class roster, please select a
+                    specific subject from the dropdown above.
+                  </p>
+                </div>
+              )}
+
+              {/* Data Table */}
+              <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+                <div
+                  className={`overflow-x-auto w-full transition-all duration-300 ${!isReportExpanded ? "max-h-[500px] overflow-y-auto" : "h-auto"}`}
+                >
+                  <table className="w-full text-left border-collapse min-w-[900px]">
+                    <thead className="sticky top-0 bg-slate-50 z-10 shadow-sm">
+                      <tr className="bg-blue-900/10 text-blue-950 text-sm font-bold uppercase tracking-wider border-b border-blue-900/20 select-none">
+                        <th className="p-5" onClick={() => handleSort("time")}>
+                          Time{" "}
+                          <SortIcon columnKey="time" sortConfig={sortConfig} />
+                        </th>
+                        <th
+                          className="p-5"
+                          onClick={() => handleSort("student_number")}
+                        >
+                          Student Number{" "}
+                          <SortIcon
+                            columnKey="student_number"
+                            sortConfig={sortConfig}
+                          />
+                        </th>
+                        <th className="p-5" onClick={() => handleSort("name")}>
+                          Student Name{" "}
+                          <SortIcon columnKey="name" sortConfig={sortConfig} />
+                        </th>
+                        <th
+                          className="p-5"
+                          onClick={() => handleSort("program")}
+                        >
+                          Program{" "}
+                          <SortIcon
+                            columnKey="program"
+                            sortConfig={sortConfig}
+                          />
+                        </th>
+                        <th
+                          className="p-5"
+                          onClick={() => handleSort("subject")}
+                        >
+                          Subject{" "}
+                          <SortIcon
+                            columnKey="subject"
+                            sortConfig={sortConfig}
+                          />
+                        </th>
+                        <th
+                          className="p-5"
+                          onClick={() => handleSort("status")}
+                        >
+                          Status{" "}
+                          <SortIcon
+                            columnKey="status"
+                            sortConfig={sortConfig}
+                          />
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-base bg-white">
+                      {reportRows.length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={6}
+                            className="p-16 text-center text-slate-400 font-medium"
+                          >
+                            <div className="flex flex-col items-center justify-center space-y-3">
+                              <span className="text-4xl">📭</span>
+                              <p className="text-slate-600 font-bold">
+                                No records found for the selected date and
+                                filter.
+                              </p>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        reportRows.map((log) => {
+                          const hasScanned = Boolean(
+                            log.attendance_time &&
+                            log.status &&
+                            log.attendance_time !== "00:00:00",
+                          );
+                          const isAbsent = log.status === "Absent";
+
+                          return (
+                            <tr
+                              key={`${log.id}_${log.student_id}`}
+                              className="hover:bg-blue-50/50 transition-colors"
+                            >
+                              <td className="p-5 text-slate-700 font-mono text-sm font-bold whitespace-nowrap">
+                                {hasScanned ? (
+                                  formatTimeAMPM(log.attendance_time)
+                                ) : isAbsent ? (
+                                  <span className="text-slate-400">N/A</span>
+                                ) : (
+                                  <span className="text-slate-300 font-normal">
+                                    —
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-5 font-bold text-blue-900 font-mono text-sm">
+                                {log.students?.student_number || "Unknown"}
+                              </td>
+                              <td className="p-5 font-extrabold text-slate-900">
+                                {formatStudentName(log.students)}
+                              </td>
+                              <td className="p-5 text-slate-600 font-medium whitespace-nowrap">
+                                {log.students?.program} • Yr{" "}
+                                {log.students?.year_level}
+                              </td>
+                              <td className="p-5">
+                                <span className="font-bold text-slate-700 text-sm block">
+                                  {log.subject || "N/A"}
+                                </span>
+                                {log.section && (
+                                  <span className="text-xs text-slate-500">
+                                    Sec: {log.section}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-5">
+                                {hasScanned ? (
+                                  <span className="px-4 py-1.5 rounded-md text-sm font-bold uppercase bg-emerald-100 text-emerald-800 border">
+                                    {log.status}
+                                  </span>
+                                ) : isAbsent ? (
+                                  <span className="px-4 py-1.5 rounded-md text-sm font-bold uppercase bg-rose-100 text-rose-800 border border-rose-200">
+                                    Absent
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-300 font-medium">
+                                    —
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                {reportRows.length > 7 && (
+                  <div className="bg-slate-50 border-t border-slate-100 p-2.5 flex justify-center">
+                    <button
+                      onClick={() => setIsReportExpanded(!isReportExpanded)}
+                      className="text-xs font-bold text-blue-900 bg-white border border-blue-200 hover:bg-blue-50 px-6 py-2 rounded-full transition-all cursor-pointer shadow-sm"
+                    >
+                      {isReportExpanded ? "▲ Show Less" : "▼ Show More Records"}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
