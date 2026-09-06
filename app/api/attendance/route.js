@@ -15,8 +15,8 @@ const formatStudentName = (student) => {
 
 export async function POST(request) {
   try {
-    let { rfid_uid } = await request.json();
-    const currentDevice = "Smart_Classroom_1";
+    let { rfid_uid, device_id } = await request.json();
+    const currentDevice = device_id || "Smart_Classroom_1";
 
     if (!rfid_uid)
       return NextResponse.json(
@@ -24,10 +24,9 @@ export async function POST(request) {
         { status: 400 },
       );
 
-    // Clean up the incoming RFID UID
     rfid_uid = String(rfid_uid).trim().toUpperCase();
 
-    // 1. Fetch all students to check matching
+    // 1. Fetch all students
     const { data: students, error: studentError } = await supabase
       .from("students")
       .select(
@@ -60,9 +59,7 @@ export async function POST(request) {
 
     const isClassRunning = activeClass && activeClass.is_active;
 
-    // 3. IF CARD IS UNREGISTERED
     if (!student) {
-      // If a class session is running, strictly reject unknown cards!
       if (isClassRunning) {
         return NextResponse.json(
           { success: false, status: "error", message: "Unregistered Card" },
@@ -70,32 +67,20 @@ export async function POST(request) {
         );
       }
 
-      // If NO class session is running, automatically assign this card to the first student missing a UID!
+      // Auto-assign logic when no class is running
       const targetStudent = students.find(
         (s) => !s.rfid_uid || s.rfid_uid.trim() === "",
       );
-
       if (targetStudent) {
-        const { error: updateError } = await supabase
+        await supabase
           .from("students")
           .update({ rfid_uid: rfid_uid })
           .eq("id", targetStudent.id);
 
-        if (updateError) {
-          return NextResponse.json(
-            {
-              success: false,
-              status: "error",
-              message: "Failed to assign card",
-            },
-            { status: 500 },
-          );
-        }
-
         return NextResponse.json({
           success: true,
           status: "assigned",
-          message: `Assigned to ${targetStudent.first_name} ${targetStudent.last_name}`,
+          message: `Assigned to ${targetStudent.first_name}`,
         });
       } else {
         return NextResponse.json(
@@ -109,7 +94,6 @@ export async function POST(request) {
       }
     }
 
-    // 4. IF STUDENT IS FOUND, BUT NO CLASS IS ACTIVE
     if (!isClassRunning) {
       return NextResponse.json({
         success: false,
@@ -118,37 +102,85 @@ export async function POST(request) {
       });
     }
 
-    // 5. Time & Spam Prevention (Philippine Time UTC+8)
+    // ====================================================================
+    // 3. STRICT ENROLLMENT & SECTION ISOLATION CHECK
+    // ====================================================================
+    let subjectQuery = supabase
+      .from("subjects")
+      .select("id")
+      .eq("subject_name", activeClass.subject)
+      .eq("teacher_email", activeClass.teacher_email);
+
+    if (activeClass.section) {
+      subjectQuery = subjectQuery.eq("section", activeClass.section);
+    } else {
+      subjectQuery = subjectQuery.is("section", null);
+    }
+
+    const { data: subjectData } = await subjectQuery.maybeSingle();
+
+    if (subjectData) {
+      const { data: enrollmentData } = await supabase
+        .from("subject_enrollments")
+        .select("id")
+        .eq("subject_id", subjectData.id)
+        .eq("student_id", student.id)
+        .maybeSingle();
+
+      if (!enrollmentData) {
+        return NextResponse.json(
+          {
+            success: false,
+            status: "error",
+            message: "Student Not Enrolled",
+          },
+          { status: 403 },
+        );
+      }
+    } else {
+      return NextResponse.json(
+        {
+          success: false,
+          status: "error",
+          message: "Class Data Error",
+        },
+        { status: 500 },
+      );
+    }
+
+    // ====================================================================
+    // 4. FULL-DAY DUPLICATE PREVENTION (Checks all logs for TODAY)
+    // ====================================================================
     const now = new Date();
     const phTime = new Date(now.getTime() + 8 * 60 * 60 * 1000);
     const todayDate = phTime.toISOString().split("T")[0];
     const timeString = phTime.toISOString().split("T")[1].split(".")[0];
 
-    const fiveMinutesAgo = new Date(
-      now.getTime() - 5 * 60 * 1000 + 8 * 60 * 60 * 1000,
-    );
-    const timeLimitString = fiveMinutesAgo
-      .toISOString()
-      .split("T")[1]
-      .split(".")[0];
-
-    const { data: recentLogs } = await supabase
+    // Check if the student already has ANY record (Present or Absent) for this subject & section TODAY
+    let existingLogsQuery = supabase
       .from("attendance")
-      .select("id")
+      .select("id, status")
       .eq("student_id", student.id)
       .eq("attendance_date", todayDate)
-      .eq("subject", activeClass.subject)
-      .gte("attendance_time", timeLimitString);
+      .eq("subject", activeClass.subject);
 
-    if (recentLogs && recentLogs.length > 0) {
+    if (activeClass.section) {
+      existingLogsQuery = existingLogsQuery.eq("section", activeClass.section);
+    } else {
+      existingLogsQuery = existingLogsQuery.is("section", null);
+    }
+
+    const { data: existingLogs } = await existingLogsQuery;
+
+    if (existingLogs && existingLogs.length > 0) {
       return NextResponse.json({
         success: false,
         status: "duplicate",
-        message: "Already Logged In",
+        message: "Already Logged In Today",
       });
     }
 
-    // 6. INSERT THE ATTENDANCE TAP
+    // 5. INSERT ATTENDANCE WITH SECTION ISOLATION
     const { error: insertError } = await supabase.from("attendance").insert([
       {
         student_id: student.id,
@@ -157,6 +189,7 @@ export async function POST(request) {
         status: "Present",
         device_id: currentDevice,
         subject: activeClass.subject,
+        section: activeClass.section || null,
         teacher_email: activeClass.teacher_email,
       },
     ]);
