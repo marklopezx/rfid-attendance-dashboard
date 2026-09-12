@@ -134,6 +134,7 @@ export default function TeacherDashboard() {
   >("dashboard");
   const [userEmail, setUserEmail] = useState("");
   const [userName, setUserName] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   const [toast, setToast] = useState<{
@@ -141,10 +142,11 @@ export default function TeacherDashboard() {
     type: "success" | "error" | "info";
   } | null>(null);
 
-  // Custom Delete Modal State
+  // Modals
   const [subjectToDelete, setSubjectToDelete] = useState<SubjectData | null>(
     null,
   );
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   // Session Control State
   const [isClassActive, setIsClassActive] = useState(false);
@@ -186,15 +188,24 @@ export default function TeacherDashboard() {
 
   // Settings States
   const [settingsUsername, setSettingsUsername] = useState("");
-  const [settingsPassword, setSettingsPassword] = useState("");
-  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsDepartment, setSettingsDepartment] = useState("");
+  const [settingsPhone, setSettingsPhone] = useState("");
 
-  // Filter States - Live Stream
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isSavingPassword, setIsSavingPassword] = useState(false);
+
+  const [showOldPassword, setShowOldPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  // Filter States
   const today = new Date().toISOString().split("T")[0];
   const [selectedDate, setSelectedDate] = useState(today);
   const [streamSearchTerm, setStreamSearchTerm] = useState("");
-
-  // Filter States - Reports Tab
   const [reportDate, setReportDate] = useState(today);
   const [selectedReportSubject, setSelectedReportSubject] =
     useState<SubjectData | null>(null);
@@ -202,6 +213,8 @@ export default function TeacherDashboard() {
     EnrolledStudent[]
   >([]);
   const [reportSearchTerm, setReportSearchTerm] = useState("");
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error" | "info" = "info") => {
@@ -230,7 +243,6 @@ export default function TeacherDashboard() {
     if (data) setAllStudents(data);
   }, []);
 
-  // Fetch roster for Dashboard / Subjects tab
   const fetchRoster = useCallback(async (subjectId: number) => {
     const { data, error } = await supabase
       .from("subject_enrollments")
@@ -250,11 +262,17 @@ export default function TeacherDashboard() {
           return item.students;
         })
         .filter((s): s is EnrolledStudent => Boolean(s));
+
+      formattedRoster.sort((a, b) => {
+        const nameA = formatStudentName(a).toLowerCase();
+        const nameB = formatStudentName(b).toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+
       setEnrolledStudents(formattedRoster);
     }
   }, []);
 
-  // Fetch roster specifically for the Reports tab
   const fetchReportRoster = useCallback(async (subjectId: number) => {
     const { data, error } = await supabase
       .from("subject_enrollments")
@@ -274,6 +292,13 @@ export default function TeacherDashboard() {
           return item.students;
         })
         .filter((s): s is EnrolledStudent => Boolean(s));
+
+      formattedRoster.sort((a, b) => {
+        const nameA = formatStudentName(a).toLowerCase();
+        const nameB = formatStudentName(b).toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+
       setReportEnrolledStudents(formattedRoster);
     }
   }, []);
@@ -293,7 +318,7 @@ export default function TeacherDashboard() {
 
       const { data: profile } = await supabase
         .from("profiles")
-        .select("role, username")
+        .select("role, username, avatar_url, department, phone_number")
         .eq("id", session.user.id)
         .single();
 
@@ -305,6 +330,9 @@ export default function TeacherDashboard() {
       const displayName = profile?.username || email;
       setUserName(displayName);
       setSettingsUsername(profile?.username || "");
+      setSettingsDepartment(profile?.department || "");
+      setSettingsPhone(profile?.phone_number || "");
+      setAvatarUrl(profile?.avatar_url || "");
       setIsAuthenticating(false);
 
       const { data: activeClass } = await supabase
@@ -320,8 +348,13 @@ export default function TeacherDashboard() {
         setSelectedDevice(activeClass.device_id);
         setInputSubject(activeClass.subject || "");
 
-        if (activeClass.subject) {
-          const found = subjects.find(
+        const { data: currentSubjects } = await supabase
+          .from("subjects")
+          .select("*")
+          .eq("teacher_email", email);
+
+        if (currentSubjects && activeClass.subject) {
+          const found = currentSubjects.find(
             (s) =>
               s.subject_name === activeClass.subject &&
               s.section === activeClass.section,
@@ -330,7 +363,7 @@ export default function TeacherDashboard() {
             setSelectedSubject(found);
             fetchRoster(found.id);
           } else {
-            const fallbackFound = subjects.find(
+            const fallbackFound = currentSubjects.find(
               (s) => s.subject_name === activeClass.subject,
             );
             if (fallbackFound) {
@@ -347,7 +380,7 @@ export default function TeacherDashboard() {
       }
     };
     initPortal();
-  }, [router, fetchSubjects, fetchMasterStudents, subjects, fetchRoster]);
+  }, [router, fetchSubjects, fetchMasterStudents, fetchRoster]);
 
   useEffect(() => {
     if (isAuthenticating) return;
@@ -374,8 +407,6 @@ export default function TeacherDashboard() {
         }
       } catch (error) {
         console.error("Failed to sync system data", error);
-        if (isMounted && isInitial)
-          showToast("Failed to connect to live stream.", "error");
       } finally {
         if (isInitial && isMounted) setLoading(false);
       }
@@ -390,7 +421,7 @@ export default function TeacherDashboard() {
       clearInterval(dataInterval);
       clearInterval(timeInterval);
     };
-  }, [isAuthenticating, showToast]);
+  }, [isAuthenticating]);
 
   const isSelectedDeviceOnline = useMemo(() => {
     const terminal = terminals.find((t) => t.device_id === selectedDevice);
@@ -559,9 +590,53 @@ export default function TeacherDashboard() {
     }
   };
 
-  const handleSaveSettings = async (e: React.FormEvent) => {
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    try {
+      setIsUploadingAvatar(true);
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const fileExt = file.name.split(".").pop();
+      const fileName = `${Math.random()}.${fileExt}`;
+      const filePath = `avatars/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("avatars")
+        .upload(filePath, file, { upsert: true });
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from("avatars").getPublicUrl(filePath);
+      const publicUrl = data.publicUrl;
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        await supabase
+          .from("profiles")
+          .upsert(
+            { id: session.user.id, avatar_url: publicUrl, role: "teacher" },
+            { onConflict: "id" },
+          );
+      }
+
+      setAvatarUrl(publicUrl);
+      showToast("Avatar updated successfully!", "success");
+    } catch {
+      showToast("Failed to upload avatar.", "error");
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  };
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSavingSettings(true);
+    if (!settingsUsername.trim()) {
+      showToast("Username cannot be empty.", "error");
+      return;
+    }
+    setIsSavingProfile(true);
 
     try {
       const {
@@ -569,33 +644,77 @@ export default function TeacherDashboard() {
       } = await supabase.auth.getSession();
       if (!session) return;
 
-      const { error: profileError } = await supabase
-        .from("profiles")
-        .update({ username: settingsUsername.trim() })
-        .eq("id", session.user.id);
+      const { error: profileError } = await supabase.from("profiles").upsert(
+        {
+          id: session.user.id,
+          username: settingsUsername.trim(),
+          department: settingsDepartment.trim(),
+          phone_number: settingsPhone.trim(),
+          role: "teacher",
+        },
+        { onConflict: "id" },
+      );
 
       if (profileError) throw profileError;
 
-      if (settingsPassword.trim()) {
-        const { error: authError } = await supabase.auth.updateUser({
-          password: settingsPassword,
-        });
-        if (authError) throw authError;
-        setSettingsPassword("");
-      }
-
-      setUserName(settingsUsername.trim() || userEmail);
-      showToast("Account settings updated successfully!", "success");
+      setUserName(settingsUsername.trim());
+      showToast("Profile details updated successfully!", "success");
     } catch (err: unknown) {
       const errMsg =
-        err instanceof Error ? err.message : "Failed to save settings.";
+        err instanceof Error ? err.message : "Failed to update profile.";
       showToast(errMsg, "error");
     } finally {
-      setIsSavingSettings(false);
+      setIsSavingProfile(false);
     }
   };
 
-  const handleSignOut = async () => {
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!oldPassword || !newPassword || !confirmPassword) {
+      showToast("Please fill in all password fields.", "error");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      showToast("New passwords do not match.", "error");
+      return;
+    }
+
+    setIsSavingPassword(true);
+
+    try {
+      const { error: verifyError } = await supabase.auth.signInWithPassword({
+        email: userEmail,
+        password: oldPassword,
+      });
+
+      if (verifyError) {
+        throw new Error("Incorrect current password. Please try again.");
+      }
+
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (updateError) throw updateError;
+
+      showToast("Password updated successfully! Keep it safe.", "success");
+      setOldPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setShowOldPassword(false);
+      setShowNewPassword(false);
+      setShowConfirmPassword(false);
+    } catch (err: unknown) {
+      const errMsg =
+        err instanceof Error ? err.message : "Failed to change password.";
+      showToast(errMsg, "error");
+    } finally {
+      setIsSavingPassword(false);
+    }
+  };
+
+  const executeSignOut = async () => {
     try {
       await supabase.auth.signOut();
     } catch (error) {
@@ -911,7 +1030,7 @@ export default function TeacherDashboard() {
       "Student Name",
       "Program",
       "Year Level",
-      "Section",
+      "Year & Section",
       "Subject",
       "Status",
     ];
@@ -960,7 +1079,7 @@ export default function TeacherDashboard() {
       "Student Name",
       "Program",
       "Year Level",
-      "Section",
+      "Year & Section",
       "Subject",
       "Status",
     ];
@@ -1035,6 +1154,7 @@ export default function TeacherDashboard() {
         </div>
       )}
 
+      {/* DELETE SUBJECT MODAL */}
       {subjectToDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-blue-950/40 backdrop-blur-xs p-4 animate-fade-in">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 text-center space-y-4 animate-scale-up">
@@ -1065,6 +1185,43 @@ export default function TeacherDashboard() {
                 className="w-full py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition-all shadow-sm cursor-pointer text-xs"
               >
                 Yes, Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* LOGOUT CONFIRMATION MODAL */}
+      {showLogoutModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-blue-950/40 backdrop-blur-xs p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 text-center space-y-4 animate-scale-up">
+            <div className="w-12 h-12 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center text-2xl mx-auto shadow-inner">
+              🚪
+            </div>
+            <div>
+              <h3 className="text-lg font-extrabold text-blue-950">
+                Sign Out?
+              </h3>
+              <p className="text-slate-500 text-xs mt-1 leading-relaxed">
+                Are you sure you want to log out? You will need your credentials
+                to sign back in.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <button
+                onClick={() => setShowLogoutModal(false)}
+                className="w-full py-2.5 px-3 rounded-xl border border-slate-200 text-slate-700 font-bold hover:bg-slate-50 transition-all cursor-pointer text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowLogoutModal(false);
+                  executeSignOut();
+                }}
+                className="w-full py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition-all shadow-sm cursor-pointer text-xs"
+              >
+                Yes, Log Out
               </button>
             </div>
           </div>
@@ -1120,8 +1277,8 @@ export default function TeacherDashboard() {
               title="Live Classroom"
               className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-xl font-bold transition-all cursor-pointer group ${
                 activeTab === "dashboard"
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-slate-300 hover:bg-slate-800/50 hover:text-white"
+                  ? "bg-slate-700/50 text-white shadow-sm"
+                  : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
               }`}
             >
               <span className="text-lg shrink-0">🔴</span>
@@ -1137,8 +1294,8 @@ export default function TeacherDashboard() {
               title="Subjects"
               className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-xl font-bold transition-all cursor-pointer group ${
                 activeTab === "subjects"
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-slate-300 hover:bg-slate-800/50 hover:text-white"
+                  ? "bg-slate-700/50 text-white shadow-sm"
+                  : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
               }`}
             >
               <span className="text-lg shrink-0">📚</span>
@@ -1152,8 +1309,8 @@ export default function TeacherDashboard() {
               title="Attendance Reports"
               className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-xl font-bold transition-all cursor-pointer group ${
                 activeTab === "reports"
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-slate-300 hover:bg-slate-800/50 hover:text-white"
+                  ? "bg-slate-700/50 text-white shadow-sm"
+                  : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
               }`}
             >
               <span className="text-lg shrink-0">📊</span>
@@ -1169,8 +1326,8 @@ export default function TeacherDashboard() {
               title="Account Settings"
               className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-xl font-bold transition-all cursor-pointer group ${
                 activeTab === "settings"
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-slate-300 hover:bg-slate-800/50 hover:text-white"
+                  ? "bg-slate-700/50 text-white shadow-sm"
+                  : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
               }`}
             >
               <span className="text-lg shrink-0">⚙️</span>
@@ -1185,31 +1342,56 @@ export default function TeacherDashboard() {
           <div className="mt-auto pt-4 border-t border-slate-700/60 bg-slate-900/60 rounded-2xl p-3">
             {isSidebarOpen ? (
               <>
-                <div className="text-xs font-bold text-slate-100 truncate mb-0.5">
-                  {userName}
-                </div>
-                <div className="text-[11px] text-slate-400 truncate mb-3">
-                  {userEmail}
+                <div className="flex items-center gap-3 mb-3">
+                  {avatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={avatarUrl}
+                      alt="Avatar"
+                      className="w-8 h-8 rounded-full border border-slate-500 object-cover"
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold text-white uppercase">
+                      {userName ? userName.charAt(0) : "U"}
+                    </div>
+                  )}
+                  <div className="overflow-hidden">
+                    <div className="text-xs font-bold text-slate-100 truncate mb-0.5">
+                      {userName}
+                    </div>
+                    <div className="text-[11px] text-slate-400 truncate">
+                      {userEmail}
+                    </div>
+                  </div>
                 </div>
                 <button
-                  onClick={handleSignOut}
-                  className="w-full py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 font-bold text-xs transition-all cursor-pointer shadow-sm"
+                  onClick={() => setShowLogoutModal(true)}
+                  className="w-full py-2 rounded-xl border border-rose-500/20 bg-transparent hover:bg-rose-500/10 text-rose-400 hover:text-rose-300 font-bold text-xs transition-colors cursor-pointer"
                 >
                   Sign Out
                 </button>
               </>
             ) : (
               <div className="flex flex-col items-center gap-2">
-                <span
-                  className="w-8 h-8 rounded-full bg-slate-800 text-white font-bold text-xs flex items-center justify-center uppercase shadow-inner"
-                  title={userName}
-                >
-                  {userName ? userName.charAt(0) : "U"}
-                </span>
+                {avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={avatarUrl}
+                    alt="Avatar"
+                    className="w-8 h-8 rounded-full border border-slate-500 object-cover"
+                  />
+                ) : (
+                  <span
+                    className="w-8 h-8 rounded-full bg-slate-800 text-white font-bold text-xs flex items-center justify-center uppercase shadow-inner"
+                    title={userName}
+                  >
+                    {userName ? userName.charAt(0) : "U"}
+                  </span>
+                )}
                 <button
-                  onClick={handleSignOut}
+                  onClick={() => setShowLogoutModal(true)}
                   title="Sign Out"
-                  className="p-2 rounded-xl bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 transition-all cursor-pointer"
+                  className="p-2 rounded-xl border border-rose-500/20 bg-transparent hover:bg-rose-500/10 text-rose-400 hover:text-rose-300 transition-colors cursor-pointer"
                 >
                   🚪
                 </button>
@@ -1322,15 +1504,14 @@ export default function TeacherDashboard() {
                           setTimeout(() => setShowSubjectDropdown(false), 200)
                         }
                         disabled={isClassActive}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-base text-slate-900 placeholder-slate-400 focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 outline-none disabled:opacity-60 pr-24 transition-all shadow-inner"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-base text-slate-900 placeholder-slate-400 focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 outline-none disabled:opacity-60 pr-28 transition-all shadow-inner"
                       />
-                      {/* Section Badge inside the Input */}
                       {inputSubject &&
                         selectedSubject &&
                         selectedSubject.subject_name === inputSubject &&
                         selectedSubject.section && (
                           <span className="absolute right-3 bg-blue-100 border border-blue-200 text-blue-800 text-[10px] font-extrabold px-2 py-1 rounded shadow-sm pointer-events-none">
-                            SEC: {selectedSubject.section}
+                            Y&S: {selectedSubject.section}
                           </span>
                         )}
                     </div>
@@ -1355,7 +1536,7 @@ export default function TeacherDashboard() {
                               </span>
                               {sub.section && (
                                 <span className="text-xs text-slate-500 bg-slate-100 px-2.5 py-1 rounded-md font-medium">
-                                  Sec: {sub.section}
+                                  Y&S: {sub.section}
                                 </span>
                               )}
                             </div>
@@ -1488,7 +1669,7 @@ export default function TeacherDashboard() {
                       {subjects.map((subj) => (
                         <option key={subj.id} value={subj.id.toString()}>
                           {subj.subject_name}{" "}
-                          {subj.section ? `(Sec: ${subj.section})` : ""}
+                          {subj.section ? `(Y&S: ${subj.section})` : ""}
                         </option>
                       ))}
                     </select>
@@ -1503,7 +1684,7 @@ export default function TeacherDashboard() {
                 </div>
 
                 <div
-                  className={`overflow-x-auto w-full transition-all duration-300 ${!isStreamExpanded ? "max-h-[380px] overflow-y-auto" : "h-auto"}`}
+                  className={`overflow-x-auto w-full transition-all duration-300 ${!isStreamExpanded ? "max-h-[600px] overflow-y-auto" : "h-auto"}`}
                 >
                   <table className="w-full text-left border-collapse min-w-[800px]">
                     <thead className="sticky top-0 bg-slate-50 z-10 shadow-sm">
@@ -1540,7 +1721,7 @@ export default function TeacherDashboard() {
                           className="p-5"
                           onClick={() => handleSort("year_section")}
                         >
-                          Yr & Sec{" "}
+                          Year & Section{" "}
                           <SortIcon
                             columnKey="year_section"
                             sortConfig={sortConfig}
@@ -1623,7 +1804,7 @@ export default function TeacherDashboard() {
                               </td>
                               <td className="p-5 whitespace-nowrap">
                                 <span className="bg-slate-100 px-3 py-1.5 rounded-md border text-slate-700 font-bold text-sm">
-                                  Yr {log.students?.year_level || "?"} • Sec{" "}
+                                  Yr {log.students?.year_level || "?"} •{" "}
                                   {log.students?.section || "?"}
                                 </span>
                               </td>
@@ -1655,7 +1836,7 @@ export default function TeacherDashboard() {
                     </tbody>
                   </table>
                 </div>
-                {activeStreamRows.length > 5 && (
+                {activeStreamRows.length > 8 && (
                   <div className="bg-slate-50 border-t border-slate-100 p-2.5 flex justify-center">
                     <button
                       onClick={() => setIsStreamExpanded(!isStreamExpanded)}
@@ -1697,22 +1878,20 @@ export default function TeacherDashboard() {
                 </div>
               </div>
 
-              {/* Grid layout */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                {/* LEFT COLUMN: Create New Subject & My Subjects Box */}
-                <div className="lg:col-span-5 flex flex-col gap-6">
-                  <div className="bg-white rounded-3xl border border-slate-200/80 p-7 shadow-sm relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-blue-50 rounded-bl-full pointer-events-none -z-0"></div>
-                    <h3 className="text-lg font-extrabold text-blue-950 mb-5 relative z-10 flex items-center gap-2.5">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
+                <div className="lg:col-span-6 bg-white rounded-3xl border border-slate-200/80 p-8 shadow-sm relative overflow-hidden flex flex-col justify-between">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-blue-50 rounded-bl-full pointer-events-none -z-0"></div>
+                  <div>
+                    <h3 className="text-lg font-extrabold text-blue-950 mb-6 relative z-10 flex items-center gap-2.5">
                       <span className="w-2.5 h-2.5 rounded-full bg-blue-900"></span>
                       Create New Subject
                     </h3>
                     <form
                       onSubmit={handleCreateSubject}
-                      className="space-y-4 relative z-10"
+                      className="space-y-5 relative z-10"
                     >
                       <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
                           Subject Name
                         </label>
                         <input
@@ -1725,8 +1904,8 @@ export default function TeacherDashboard() {
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                          Section{" "}
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                          Year & Section{" "}
                           <span className="text-slate-400 font-normal">
                             (Optional)
                           </span>
@@ -1742,253 +1921,249 @@ export default function TeacherDashboard() {
                       <button
                         type="submit"
                         disabled={isCreatingSubject}
-                        className="w-full bg-blue-900 hover:bg-blue-950 text-white font-extrabold py-3.5 rounded-xl shadow-md transition-all text-sm cursor-pointer disabled:opacity-50 mt-2"
+                        className="w-full bg-blue-900 hover:bg-blue-950 text-white font-extrabold py-3.5 rounded-xl shadow-md transition-all text-sm cursor-pointer disabled:opacity-50 mt-4"
                       >
                         {isCreatingSubject ? "Creating..." : "+ Add Subject"}
                       </button>
                     </form>
                   </div>
-
-                  {/* My Subjects box with fixed max height and internal scroll */}
-                  <div className="bg-white rounded-3xl border border-slate-200/80 p-7 shadow-sm flex flex-col max-h-[460px]">
-                    <div className="shrink-0 flex items-center justify-between mb-5">
-                      <h3 className="text-lg font-extrabold text-blue-950 flex items-center gap-2.5">
-                        <span className="w-2.5 h-2.5 rounded-full bg-blue-900"></span>
-                        My Subjects
-                      </h3>
-                      <span className="bg-blue-50 text-blue-900 border border-blue-100 text-xs font-bold px-2.5 py-1 rounded-full">
-                        {subjects.length}
-                      </span>
-                    </div>
-
-                    {subjects.length === 0 ? (
-                      <div className="flex-1 text-center py-10 px-4 bg-slate-50/70 rounded-2xl border border-dashed border-slate-200">
-                        <p className="text-sm font-bold text-slate-700">
-                          No subjects created yet
-                        </p>
-                        <p className="text-xs text-slate-400 mt-1">
-                          Fill out the form above to add your first course.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="overflow-y-auto pr-1 space-y-3 max-h-[340px]">
-                        {subjects.map((sub) => {
-                          const isSelected = selectedSubject?.id === sub.id;
-                          return (
-                            <div
-                              key={sub.id}
-                              onClick={() => {
-                                setSelectedSubject(sub);
-                                setHasSessionRunToday(false);
-                                fetchRoster(sub.id);
-                              }}
-                              className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between group ${
-                                isSelected
-                                  ? "bg-blue-950 text-white border-blue-950 shadow-md transform scale-[1.01]"
-                                  : "bg-slate-50/50 hover:bg-slate-100/80 border-slate-200/80 text-slate-900"
-                              }`}
-                            >
-                              <div className="pr-3 truncate">
-                                <h4 className="font-extrabold text-sm truncate">
-                                  {sub.subject_name}
-                                </h4>
-                                <p
-                                  className={`text-xs mt-0.5 truncate font-medium ${isSelected ? "text-blue-200" : "text-slate-500"}`}
-                                >
-                                  {sub.section
-                                    ? `Section: ${sub.section}`
-                                    : "No Section Assigned"}
-                                </p>
-                              </div>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSubjectToDelete(sub);
-                                }}
-                                className={`text-xs font-bold p-2 rounded-xl transition-all cursor-pointer shrink-0 ${
-                                  isSelected
-                                    ? "text-rose-300 hover:bg-rose-900/60"
-                                    : "text-rose-600 hover:bg-rose-50 opacity-0 group-hover:opacity-100"
-                                }`}
-                                title="Delete Subject"
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
                 </div>
 
-                {/* RIGHT COLUMN: Active Course / Roster Box (Slightly taller height max-h-[480px]) */}
-                <div className="lg:col-span-7 flex flex-col bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden">
-                  {selectedSubject ? (
-                    <>
-                      <div className="shrink-0 p-7 sm:p-8 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                        <div>
-                          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold uppercase tracking-wider mb-2">
-                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                            Active Course
-                          </div>
-                          <h2 className="text-2xl sm:text-3xl font-extrabold text-blue-950">
-                            {selectedSubject.subject_name}
-                          </h2>
-                          <p className="text-slate-500 text-sm font-medium mt-1">
-                            {selectedSubject.section
-                              ? `Section: ${selectedSubject.section} • `
-                              : ""}
-                            Enrolled Students:{" "}
-                            <span className="font-bold text-slate-900">
-                              {enrolledStudents.length}
-                            </span>
-                          </p>
-                        </div>
-                      </div>
+                <div className="lg:col-span-6 bg-white rounded-3xl border border-slate-200/80 p-8 shadow-sm flex flex-col h-full">
+                  <div className="shrink-0 flex items-center justify-between mb-6">
+                    <h3 className="text-lg font-extrabold text-blue-950 flex items-center gap-2.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-900"></span>
+                      My Subjects
+                    </h3>
+                    <span className="bg-blue-50 text-blue-900 border border-blue-100 text-xs font-bold px-2.5 py-1 rounded-full">
+                      {subjects.length}
+                    </span>
+                  </div>
 
-                      <div className="shrink-0 p-6 border-b border-slate-100 bg-white space-y-4">
-                        <div className="flex items-center justify-between">
-                          <label className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
-                            Enroll Students from Database
-                          </label>
-                          <span className="text-xs text-slate-400 font-medium">
-                            Type name or ID number
-                          </span>
-                        </div>
-                        <input
-                          type="text"
-                          placeholder="Search student by name or student number..."
-                          value={studentSearchTerm}
-                          onChange={(e) => setStudentSearchTerm(e.target.value)}
-                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-sm text-slate-900 font-medium outline-none focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 shadow-inner placeholder-slate-400 transition-all"
-                        />
-
-                        {studentSearchTerm.trim() &&
-                          availableStudentsForEnrollment.length > 0 && (
-                            <div className="max-h-52 overflow-y-auto border border-slate-200 rounded-2xl divide-y divide-slate-100 shadow-xl bg-white p-1">
-                              {availableStudentsForEnrollment.map((s) => (
-                                <div
-                                  key={s!.id}
-                                  className="flex items-center justify-between p-3.5 hover:bg-blue-50/50 rounded-xl transition-colors"
-                                >
-                                  <div>
-                                    <p className="text-sm font-bold text-slate-900">
-                                      {formatStudentName(s)}{" "}
-                                      <span className="font-mono text-xs text-slate-500 font-bold ml-1">
-                                        ({s!.student_number})
-                                      </span>
-                                    </p>
-                                    <p className="text-xs text-slate-500 mt-0.5">
-                                      {s!.program} • Yr {s!.year_level}
-                                    </p>
-                                  </div>
-                                  <button
-                                    onClick={() => handleEnrollStudent(s!.id)}
-                                    className="bg-blue-900 hover:bg-blue-950 text-white font-extrabold px-4 py-2 rounded-xl text-xs transition-all cursor-pointer shadow-sm"
-                                  >
-                                    + Enroll
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                      </div>
-
-                      {/* Clean Roster Table Container with Extended Height (max-h-[480px]) */}
-                      <div
-                        className={`overflow-x-auto w-full transition-all duration-300 ${!isRosterExpanded ? "max-h-[480px] overflow-y-auto" : "h-auto"}`}
-                      >
-                        <table className="w-full text-left border-collapse">
-                          <thead className="sticky top-0 bg-white z-10 shadow-sm">
-                            <tr className="bg-blue-900/10 text-blue-950 text-xs font-bold uppercase tracking-wider border-b border-blue-900/20">
-                              <th className="p-4 px-6">Student Number</th>
-                              <th className="p-4 px-6">Student Name</th>
-                              <th className="p-4 px-6">Program</th>
-                              <th className="p-4 px-6 text-right">Action</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100 text-sm bg-white">
-                            {enrolledStudents.length === 0 ? (
-                              <tr>
-                                <td
-                                  colSpan={4}
-                                  className="p-16 text-center text-slate-400 font-medium"
-                                >
-                                  <div className="flex flex-col items-center justify-center space-y-2">
-                                    <span className="text-3xl">👥</span>
-                                    <p className="text-slate-600 font-bold">
-                                      No students enrolled yet
-                                    </p>
-                                    <p className="text-xs text-slate-400">
-                                      Use the search bar above to add students
-                                      to this roster.
-                                    </p>
-                                  </div>
-                                </td>
-                              </tr>
-                            ) : (
-                              enrolledStudents.map((s) => (
-                                <tr
-                                  key={s!.id}
-                                  className="hover:bg-blue-50/50 transition-colors"
-                                >
-                                  <td className="p-4 px-6 font-mono font-bold text-blue-900">
-                                    {s!.student_number}
-                                  </td>
-                                  <td className="p-4 px-6 font-extrabold text-slate-900">
-                                    {formatStudentName(s)}
-                                  </td>
-                                  <td className="p-4 px-6 text-slate-600 font-medium">
-                                    {s!.program} • Yr {s!.year_level}
-                                  </td>
-                                  <td className="p-4 px-6 text-right">
-                                    <button
-                                      onClick={() =>
-                                        handleRemoveEnrollment(s!.id)
-                                      }
-                                      className="text-rose-600 hover:text-white text-xs font-bold bg-rose-50 hover:bg-rose-600 px-3 py-1.5 rounded-xl transition-all cursor-pointer border border-rose-200 hover:border-rose-600"
-                                    >
-                                      Remove
-                                    </button>
-                                  </td>
-                                </tr>
-                              ))
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      {enrolledStudents.length > 8 && (
-                        <div className="bg-slate-50 border-t border-slate-100 p-2.5 flex justify-center">
-                          <button
-                            onClick={() =>
-                              setIsRosterExpanded(!isRosterExpanded)
-                            }
-                            className="text-xs font-bold text-blue-900 bg-white border border-blue-200 hover:bg-blue-50 px-6 py-2 rounded-full transition-all cursor-pointer shadow-sm"
-                          >
-                            {isRosterExpanded
-                              ? "▲ Show Less"
-                              : "▼ Show More Records"}
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div className="p-20 text-center text-slate-400 my-auto flex flex-col items-center justify-center">
-                      <div className="w-16 h-16 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center text-2xl mb-4 shadow-inner">
-                        📂
-                      </div>
-                      <h3 className="text-lg font-extrabold text-slate-800">
-                        Select a Subject
-                      </h3>
-                      <p className="text-sm text-slate-500 mt-1 max-w-sm">
-                        Click on any subject from your list on the left panel to
-                        manage its student roster and enrollment records.
+                  {subjects.length === 0 ? (
+                    <div className="flex-1 text-center py-10 px-4 bg-slate-50/70 rounded-2xl border border-dashed border-slate-200 flex flex-col items-center justify-center my-auto">
+                      <p className="text-sm font-bold text-slate-700">
+                        No subjects created yet
                       </p>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Fill out the form on the left to add your first course.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="overflow-y-auto pr-1 space-y-3 max-h-[300px]">
+                      {subjects.map((sub) => {
+                        const isSelected = selectedSubject?.id === sub.id;
+                        return (
+                          <div
+                            key={sub.id}
+                            onClick={() => {
+                              setSelectedSubject(sub);
+                              setHasSessionRunToday(false);
+                              fetchRoster(sub.id);
+                            }}
+                            className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between group ${
+                              isSelected
+                                ? "bg-blue-950 text-white border-blue-950 shadow-md transform scale-[1.01]"
+                                : "bg-slate-50/50 hover:bg-slate-100/80 border-slate-200/80 text-slate-900"
+                            }`}
+                          >
+                            <div className="pr-3 truncate">
+                              <h4 className="font-extrabold text-sm truncate">
+                                {sub.subject_name}
+                              </h4>
+                              <p
+                                className={`text-xs mt-0.5 truncate font-medium ${isSelected ? "text-blue-200" : "text-slate-500"}`}
+                              >
+                                {sub.section
+                                  ? `Year & Section: ${sub.section}`
+                                  : "No Section Assigned"}
+                              </p>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSubjectToDelete(sub);
+                              }}
+                              className={`text-xs font-bold p-2 rounded-xl transition-all cursor-pointer shrink-0 ${
+                                isSelected
+                                  ? "text-rose-300 hover:bg-rose-900/60"
+                                  : "text-rose-600 hover:bg-rose-50 opacity-0 group-hover:opacity-100"
+                              }`}
+                              title="Delete Subject"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden flex flex-col w-full">
+                {selectedSubject ? (
+                  <>
+                    <div className="shrink-0 p-8 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold uppercase tracking-wider mb-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                          Active Course Roster
+                        </div>
+                        <h2 className="text-2xl sm:text-3xl font-extrabold text-blue-950">
+                          {selectedSubject.subject_name}
+                        </h2>
+                        <p className="text-slate-500 text-sm font-medium mt-1">
+                          {selectedSubject.section
+                            ? `Year & Section: ${selectedSubject.section} • `
+                            : ""}
+                          Enrolled Students:{" "}
+                          <span className="font-bold text-slate-900">
+                            {enrolledStudents.length}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 p-6 border-b border-slate-100 bg-white space-y-4">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                          Enroll Students from Database
+                        </label>
+                        <span className="text-xs text-slate-400 font-medium">
+                          Type name or ID number
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Search student by name or student number..."
+                        value={studentSearchTerm}
+                        onChange={(e) => setStudentSearchTerm(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-sm text-slate-900 font-medium outline-none focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 shadow-inner placeholder-slate-400 transition-all"
+                      />
+
+                      {studentSearchTerm.trim() &&
+                        availableStudentsForEnrollment.length > 0 && (
+                          <div className="max-h-52 overflow-y-auto border border-slate-200 rounded-2xl divide-y divide-slate-100 shadow-xl bg-white p-1">
+                            {availableStudentsForEnrollment.map((s) => (
+                              <div
+                                key={s!.id}
+                                className="flex items-center justify-between p-3.5 hover:bg-blue-50/50 rounded-xl transition-colors"
+                              >
+                                <div>
+                                  <p className="text-sm font-bold text-slate-900">
+                                    {formatStudentName(s)}{" "}
+                                    <span className="font-mono text-xs text-slate-500 font-bold ml-1">
+                                      ({s!.student_number})
+                                    </span>
+                                  </p>
+                                  <p className="text-xs text-slate-500 mt-0.5">
+                                    {s!.program} • Yr {s!.year_level}
+                                  </p>
+                                </div>
+                                <button
+                                  onClick={() => handleEnrollStudent(s!.id)}
+                                  className="bg-blue-900 hover:bg-blue-950 text-white font-extrabold px-4 py-2 rounded-xl text-xs transition-all cursor-pointer shadow-sm"
+                                >
+                                  + Enroll
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                    </div>
+
+                    <div
+                      className={`overflow-x-auto w-full transition-all duration-300 ${!isRosterExpanded ? "max-h-[480px] overflow-y-auto" : "h-auto"}`}
+                    >
+                      <table className="w-full text-left border-collapse">
+                        <thead className="sticky top-0 bg-white z-10 shadow-sm">
+                          <tr className="bg-blue-900/10 text-blue-950 text-xs font-bold uppercase tracking-wider border-b border-blue-900/20">
+                            <th className="p-4 px-6">Student Number</th>
+                            <th className="p-4 px-6">Student Name</th>
+                            <th className="p-4 px-6">Program</th>
+                            <th className="p-4 px-6 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-sm bg-white">
+                          {enrolledStudents.length === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={4}
+                                className="p-16 text-center text-slate-400 font-medium"
+                              >
+                                <div className="flex flex-col items-center justify-center space-y-2">
+                                  <span className="text-3xl">👥</span>
+                                  <p className="text-slate-600 font-bold">
+                                    No students enrolled yet
+                                  </p>
+                                  <p className="text-xs text-slate-400">
+                                    Use the search bar above to add students to
+                                    this roster.
+                                  </p>
+                                </div>
+                              </td>
+                            </tr>
+                          ) : (
+                            enrolledStudents.map((s) => (
+                              <tr
+                                key={s!.id}
+                                className="hover:bg-blue-50/50 transition-colors"
+                              >
+                                <td className="p-4 px-6 font-mono font-bold text-blue-900">
+                                  {s!.student_number}
+                                </td>
+                                <td className="p-4 px-6 font-extrabold text-slate-900">
+                                  {formatStudentName(s)}
+                                </td>
+                                <td className="p-4 px-6 text-slate-600 font-medium">
+                                  {s!.program} • Yr {s!.year_level}
+                                </td>
+                                <td className="p-4 px-6 text-right">
+                                  <button
+                                    onClick={() =>
+                                      handleRemoveEnrollment(s!.id)
+                                    }
+                                    className="text-rose-600 hover:text-white text-xs font-bold bg-rose-50 hover:bg-rose-600 px-3 py-1.5 rounded-xl transition-all cursor-pointer border border-rose-200 hover:border-rose-600"
+                                  >
+                                    Remove
+                                  </button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {enrolledStudents.length > 8 && (
+                      <div className="bg-slate-50 border-t border-slate-100 p-2.5 flex justify-center">
+                        <button
+                          onClick={() => setIsRosterExpanded(!isRosterExpanded)}
+                          className="text-xs font-bold text-blue-900 bg-white border border-blue-200 hover:bg-blue-50 px-6 py-2 rounded-full transition-all cursor-pointer shadow-sm"
+                        >
+                          {isRosterExpanded
+                            ? "▲ Show Less"
+                            : "▼ Show More Records"}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="p-16 text-center text-slate-400 flex flex-col items-center justify-center bg-slate-50/40">
+                    <div className="w-16 h-16 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center text-2xl mb-4 shadow-inner">
+                      📂
+                    </div>
+                    <h3 className="text-lg font-extrabold text-slate-800">
+                      Select a Subject
+                    </h3>
+                    <p className="text-sm text-slate-500 mt-1 max-w-sm">
+                      Click on any subject from the &ldquo;My Subjects&rdquo;
+                      list above to manage its student roster and enrollment
+                      records.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1996,7 +2171,6 @@ export default function TeacherDashboard() {
           {/* TAB 3: REPORTS */}
           {activeTab === "reports" && (
             <div className="space-y-6 animate-fade-in-up">
-              {/* Report Header */}
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white border border-slate-200/80 rounded-3xl p-8 shadow-sm">
                 <div>
                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-900 text-xs font-bold uppercase tracking-wider mb-3">
@@ -2019,7 +2193,6 @@ export default function TeacherDashboard() {
                 </button>
               </div>
 
-              {/* Filtering Controls */}
               <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm grid grid-cols-1 sm:grid-cols-3 gap-4 relative z-10">
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">
@@ -2070,7 +2243,7 @@ export default function TeacherDashboard() {
                     {subjects.map((subj) => (
                       <option key={subj.id} value={subj.id.toString()}>
                         {subj.subject_name}{" "}
-                        {subj.section ? `(Sec: ${subj.section})` : ""}
+                        {subj.section ? `(Y&S: ${subj.section})` : ""}
                       </option>
                     ))}
                   </select>
@@ -2090,7 +2263,6 @@ export default function TeacherDashboard() {
                 </div>
               </div>
 
-              {/* Top Level Summary Statistics */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
                   <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl shrink-0 shadow-inner">
@@ -2154,7 +2326,6 @@ export default function TeacherDashboard() {
                 </div>
               </div>
 
-              {/* Warning Banner if No Subject Selected */}
               {!selectedReportSubject && (
                 <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center gap-3 shadow-sm">
                   <span className="text-amber-500 text-xl">⚠️</span>
@@ -2168,7 +2339,6 @@ export default function TeacherDashboard() {
                 </div>
               )}
 
-              {/* Data Table */}
               <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
                 <div
                   className={`overflow-x-auto w-full transition-all duration-300 ${!isReportExpanded ? "max-h-[500px] overflow-y-auto" : "h-auto"}`}
@@ -2283,7 +2453,7 @@ export default function TeacherDashboard() {
                                 </span>
                                 {log.section && (
                                   <span className="text-xs text-slate-500">
-                                    Sec: {log.section}
+                                    Y&S: {log.section}
                                   </span>
                                 )}
                               </td>
@@ -2325,64 +2495,371 @@ export default function TeacherDashboard() {
 
           {/* TAB 4: SETTINGS */}
           {activeTab === "settings" && (
-            <div className="space-y-6 animate-fade-in-up max-w-2xl">
-              <div className="mb-6">
-                <h1 className="text-3xl sm:text-4xl font-extrabold text-blue-950 tracking-tight">
-                  Account Settings
-                </h1>
-                <p className="text-slate-500 text-base mt-2 font-medium">
-                  Customize your profile and update security credentials.
-                </p>
+            <div className="space-y-8 animate-fade-in-up h-full flex flex-col">
+              <div className="bg-white border border-slate-200/80 rounded-3xl p-8 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-900 text-xs font-bold uppercase tracking-wider mb-3">
+                    Preferences & Security
+                  </div>
+                  <h1 className="text-3xl sm:text-4xl font-extrabold text-blue-950 tracking-tight">
+                    Account Settings
+                  </h1>
+                  <p className="text-slate-500 text-base mt-1 font-medium">
+                    Manage your personal information and update your secure
+                    credentials.
+                  </p>
+                </div>
               </div>
 
-              <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 sm:p-8">
-                <form onSubmit={handleSaveSettings} className="space-y-6">
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-2">
-                      Display Username
-                    </label>
-                    <p className="text-xs text-slate-500 mb-3 font-medium">
-                      This is how your name will appear on the Admin logs and
-                      dashboard (e.g., &ldquo;Prof. Dela Cruz&rdquo;).
-                    </p>
-                    <input
-                      type="text"
-                      placeholder="e.g., Prof. Smith"
-                      value={settingsUsername}
-                      onChange={(e) => setSettingsUsername(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-base text-slate-900 font-medium outline-none focus:border-blue-900 shadow-inner"
-                    />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-stretch">
+                {/* Profile Box */}
+                <div className="bg-white rounded-3xl border border-slate-200/80 p-8 shadow-sm flex flex-col h-full relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-blue-50 rounded-bl-full pointer-events-none -z-0"></div>
+
+                  <div className="flex items-center gap-4 mb-8 relative z-10">
+                    <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl shadow-inner shrink-0">
+                      👤
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-extrabold text-blue-950">
+                        Profile Information
+                      </h3>
+                      <p className="text-sm text-slate-500 font-medium">
+                        Update your public profile and avatar.
+                      </p>
+                    </div>
                   </div>
 
-                  <hr className="border-slate-100" />
+                  <form
+                    onSubmit={handleUpdateProfile}
+                    className="space-y-5 flex-1 flex flex-col relative z-10"
+                  >
+                    {/* Avatar & Email Display */}
+                    <div className="flex flex-col items-center justify-center mb-4">
+                      <div
+                        className="relative group cursor-pointer mb-3"
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        {avatarUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={avatarUrl}
+                            alt="Profile Avatar"
+                            className={`w-24 h-24 rounded-full border-4 border-white shadow-md object-cover transition-all ${isUploadingAvatar ? "opacity-50" : "group-hover:opacity-80"}`}
+                          />
+                        ) : (
+                          <div
+                            className={`w-24 h-24 rounded-full border-4 border-white shadow-md bg-blue-900 text-white flex items-center justify-center text-4xl font-black transition-all ${isUploadingAvatar ? "opacity-50" : "group-hover:opacity-80"}`}
+                          >
+                            {userName ? userName.charAt(0).toUpperCase() : "U"}
+                          </div>
+                        )}
 
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-2">
-                      Change Password (Optional)
-                    </label>
-                    <p className="text-xs text-slate-500 mb-3 font-medium">
-                      Leave this blank if you do not want to change your current
-                      password.
-                    </p>
-                    <input
-                      type="password"
-                      placeholder="••••••••"
-                      value={settingsPassword}
-                      onChange={(e) => setSettingsPassword(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-base text-slate-900 font-medium outline-none focus:border-blue-900 shadow-inner placeholder-slate-300"
-                    />
-                  </div>
+                        <div className="absolute inset-0 flex items-center justify-center rounded-full bg-blue-950/40 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <svg
+                            className="w-8 h-8 text-white"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+                            />
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"
+                            />
+                          </svg>
+                        </div>
 
-                  <div className="pt-4 flex justify-end">
+                        <input
+                          type="file"
+                          ref={fileInputRef}
+                          onChange={handleAvatarUpload}
+                          accept="image/*"
+                          className="hidden"
+                        />
+                      </div>
+
+                      <div className="text-center w-full bg-slate-50/70 border border-slate-100 rounded-xl py-2 px-4 inline-flex flex-col items-center">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                          Account Email
+                        </span>
+                        <span className="text-sm font-bold text-slate-700 truncate">
+                          {userEmail}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex-1 space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                          Display Username / Faculty Title
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g., Prof. Smith"
+                          value={settingsUsername}
+                          onChange={(e) => setSettingsUsername(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-900 font-medium outline-none focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 shadow-inner transition-all"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                            Department
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g., Computer Science"
+                            value={settingsDepartment}
+                            onChange={(e) =>
+                              setSettingsDepartment(e.target.value)
+                            }
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-900 font-medium outline-none focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 shadow-inner transition-all"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                            Contact Number
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g., +63 912 345 6789"
+                            value={settingsPhone}
+                            onChange={(e) => setSettingsPhone(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-900 font-medium outline-none focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 shadow-inner transition-all"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
                     <button
                       type="submit"
-                      disabled={isSavingSettings}
-                      className="bg-blue-900 hover:bg-blue-950 text-white font-bold py-3.5 px-8 rounded-xl shadow-lg transition-all flex items-center gap-2 cursor-pointer disabled:opacity-70"
+                      disabled={isSavingProfile || !settingsUsername.trim()}
+                      className="w-full bg-blue-900 hover:bg-blue-950 text-white font-extrabold py-3.5 px-6 rounded-xl shadow-md transition-all text-sm cursor-pointer disabled:opacity-50 mt-4"
                     >
-                      {isSavingSettings ? "Saving..." : "Save Settings"}
+                      {isSavingProfile
+                        ? "Saving Profile..."
+                        : "Save Profile Details"}
                     </button>
+                  </form>
+                </div>
+
+                {/* Security Box */}
+                <div className="bg-white rounded-3xl border border-slate-200/80 p-8 shadow-sm flex flex-col h-full">
+                  <div className="flex items-center gap-4 mb-6">
+                    <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl shadow-inner shrink-0">
+                      🔒
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-extrabold text-blue-950">
+                        Security Credentials
+                      </h3>
+                      <p className="text-sm text-slate-500 font-medium">
+                        Change your password securely.
+                      </p>
+                    </div>
                   </div>
-                </form>
+
+                  <form
+                    onSubmit={handleChangePassword}
+                    className="space-y-4 flex-1 flex flex-col"
+                  >
+                    <div className="space-y-4 flex-1">
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                          Current Password
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showOldPassword ? "text" : "password"}
+                            placeholder="Enter current password"
+                            value={oldPassword}
+                            onChange={(e) => setOldPassword(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 pr-12 text-base text-slate-900 font-medium outline-none focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 shadow-inner transition-all placeholder-slate-300"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowOldPassword(!showOldPassword)}
+                            className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors focus:outline-none cursor-pointer"
+                          >
+                            {showOldPassword ? (
+                              <svg
+                                className="w-5 h-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"
+                                />
+                              </svg>
+                            ) : (
+                              <svg
+                                className="w-5 h-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                                />
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                                />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                          New Password
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showNewPassword ? "text" : "password"}
+                            placeholder="Enter new password"
+                            value={newPassword}
+                            onChange={(e) => setNewPassword(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 pr-12 text-base text-slate-900 font-medium outline-none focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 shadow-inner transition-all placeholder-slate-300"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNewPassword(!showNewPassword)}
+                            className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors focus:outline-none cursor-pointer"
+                          >
+                            {showNewPassword ? (
+                              <svg
+                                className="w-5 h-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"
+                                />
+                              </svg>
+                            ) : (
+                              <svg
+                                className="w-5 h-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                                />
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                                />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                          Confirm New Password
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showConfirmPassword ? "text" : "password"}
+                            placeholder="Re-type new password"
+                            value={confirmPassword}
+                            onChange={(e) => setConfirmPassword(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 pr-12 text-base text-slate-900 font-medium outline-none focus:border-blue-900 focus:ring-4 focus:ring-blue-900/15 shadow-inner transition-all placeholder-slate-300"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setShowConfirmPassword(!showConfirmPassword)
+                            }
+                            className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors focus:outline-none cursor-pointer"
+                          >
+                            {showConfirmPassword ? (
+                              <svg
+                                className="w-5 h-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"
+                                />
+                              </svg>
+                            ) : (
+                              <svg
+                                className="w-5 h-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                                />
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                                />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={
+                        isSavingPassword ||
+                        !oldPassword ||
+                        !newPassword ||
+                        !confirmPassword
+                      }
+                      className="w-full bg-slate-900 hover:bg-slate-950 text-white font-extrabold py-3.5 px-6 rounded-xl shadow-md transition-all text-sm cursor-pointer disabled:opacity-50 mt-4"
+                    >
+                      {isSavingPassword
+                        ? "Updating Password..."
+                        : "Update Password"}
+                    </button>
+                  </form>
+                </div>
               </div>
             </div>
           )}
