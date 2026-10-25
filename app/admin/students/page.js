@@ -1,15 +1,12 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// Helper to format the name consistently
 const formatStudentName = (student) => {
   if (!student) return "Unknown";
   if (student.last_name && student.first_name) {
@@ -20,12 +17,13 @@ const formatStudentName = (student) => {
 };
 
 export default function StudentsPage() {
-  const router = useRouter();
-  const [isAuthenticating, setIsAuthenticating] = useState(true);
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Form State for Adding a New Student
+  // Pagination state for student directory
+  const [visibleStudentsCount, setVisibleStudentsCount] = useState(15);
+
+  // Form State
   const [studentNumber, setStudentNumber] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -36,13 +34,13 @@ export default function StudentsPage() {
   const [rfidUid, setRfidUid] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // Search State
-  const [searchTerm, setSearchTerm] = useState("");
+  // Delete Modal State
+  const [targetDeleteStudent, setTargetDeleteStudent] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  // Scan-to-Assign Mode State
+  const [searchTerm, setSearchTerm] = useState("");
   const [isScanMode, setIsScanMode] = useState(false);
 
-  // Fetch ordered alphabetically by Last Name
   const fetchStudents = useCallback(async () => {
     const { data, error } = await supabase
       .from("students")
@@ -53,44 +51,41 @@ export default function StudentsPage() {
     setLoading(false);
   }, []);
 
-  // 1. Auth Check (Admin Only)
   useEffect(() => {
-    const checkUser = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) return router.push("/login");
+    let isMounted = true;
+    async function loadInitial() {
+      const { data, error } = await supabase
+        .from("students")
+        .select("*")
+        .order("last_name", { ascending: true });
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("id", session.user.id)
-        .single();
-      if (profile?.role === "teacher") return router.push("/teacher");
-
-      setIsAuthenticating(false);
-      fetchStudents();
+      if (isMounted) {
+        if (!error && data) setStudents(data);
+        setLoading(false);
+      }
+    }
+    loadInitial();
+    return () => {
+      isMounted = false;
     };
-    checkUser();
-  }, [router, fetchStudents]);
+  }, []);
 
-  // 2. Auto-refresh the student list when Scan Mode is active to catch new card assignments live
   useEffect(() => {
     if (!isScanMode) return;
     const interval = setInterval(() => {
       fetchStudents();
-    }, 1500); // Check every 1.5 seconds
+    }, 1500);
     return () => clearInterval(interval);
   }, [isScanMode, fetchStudents]);
 
-  // --- CSV UPLOAD LOGIC ---
   const handleFileUpload = (e) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = async (event) => {
-      const text = event.target.result;
+      const text = event.target?.result;
+      if (!text) return;
       const rows = text
         .split(/\r?\n/)
         .map((row) => row.trim())
@@ -106,7 +101,7 @@ export default function StudentsPage() {
             first_name: cols[2],
             middle_name: cols[3] || null,
             program: cols[4],
-            year_level: parseInt(cols[5]) || 1,
+            year_level: parseInt(cols[5], 10) || 1,
             section: cols[6],
             rfid_uid: null,
           });
@@ -119,9 +114,7 @@ export default function StudentsPage() {
         if (error) {
           alert("Database Error: " + error.message);
         } else {
-          alert(
-            `Success! Imported ${newStudents.length} blank student profiles.`,
-          );
+          alert(`Success! Imported ${newStudents.length} student profiles.`);
           fetchStudents();
         }
         setLoading(false);
@@ -130,10 +123,9 @@ export default function StudentsPage() {
       }
     };
     reader.readAsText(file);
-    e.target.value = null;
+    e.target.value = "";
   };
 
-  // Find the ID of the student currently waiting for a scan so we can highlight them
   const activeTargetId = useMemo(() => {
     if (!isScanMode) return null;
     const target = students.find(
@@ -175,16 +167,22 @@ export default function StudentsPage() {
     setSubmitting(false);
   };
 
-  const handleDelete = async (id) => {
-    if (
-      !confirm(
-        "Are you sure you want to delete this student and unregister their RFID card?",
-      )
-    )
-      return;
-    const { error } = await supabase.from("students").delete().eq("id", id);
-    if (!error) fetchStudents();
-    else alert("Failed to delete student.");
+  const executeDelete = async () => {
+    if (!targetDeleteStudent) return;
+    setIsDeleting(true);
+
+    const { error } = await supabase
+      .from("students")
+      .delete()
+      .eq("id", targetDeleteStudent.id);
+    if (error) {
+      alert("Failed to delete student: " + error.message);
+    } else {
+      fetchStudents();
+    }
+
+    setIsDeleting(false);
+    setTargetDeleteStudent(null);
   };
 
   const filteredStudents = students.filter((s) => {
@@ -197,16 +195,57 @@ export default function StudentsPage() {
     );
   });
 
-  if (isAuthenticating) return <div className="min-h-screen bg-slate-50"></div>;
+  const paginatedStudents = useMemo(() => {
+    return filteredStudents.slice(0, visibleStudentsCount);
+  }, [filteredStudents, visibleStudentsCount]);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 p-6 sm:p-10 font-sans relative overflow-hidden selection:bg-blue-200 pb-20">
-      {/* Ambient Light Navy Blue Background Gradient */}
+    <div className="relative overflow-y-auto h-full p-6 sm:p-10 pb-20 font-sans">
       <div className="absolute top-0 left-0 w-full h-[400px] bg-gradient-to-b from-blue-900/10 to-transparent pointer-events-none z-0"></div>
+
+      {/* COMPACT & CLASSY DELETE CONFIRMATION MODAL */}
+      {targetDeleteStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-blue-950/40 backdrop-blur-xs p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xl max-w-sm w-full p-6 text-center space-y-4 animate-scale-up">
+            <div className="w-11 h-11 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center text-xl mx-auto shadow-inner">
+              🗑️
+            </div>
+            <div>
+              <h3 className="text-lg font-extrabold text-blue-950">
+                Delete Student?
+              </h3>
+              <p className="text-slate-500 text-xs mt-1.5 leading-relaxed">
+                Are you sure you want to delete{" "}
+                <span className="font-bold text-slate-800">
+                  {formatStudentName(targetDeleteStudent)}
+                </span>
+                ? This will unregister their RFID card and remove all associated
+                records.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <button
+                onClick={() => setTargetDeleteStudent(null)}
+                disabled={isDeleting}
+                className="w-full py-2.5 px-3 rounded-xl border border-slate-200 text-slate-700 font-bold hover:bg-slate-50 transition-all cursor-pointer text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={executeDelete}
+                disabled={isDeleting}
+                className="w-full py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition-all shadow-sm cursor-pointer text-xs disabled:opacity-50"
+              >
+                {isDeleting ? "Deleting..." : "Yes, Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="max-w-7xl mx-auto relative z-10">
         {/* Header */}
-        <div className="bg-white/90 backdrop-blur-xl rounded-3xl shadow-sm border border-slate-200/60 p-6 sm:p-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6 mb-8">
+        <div className="bg-white/95 backdrop-blur-xl rounded-3xl shadow-sm border border-slate-200/60 p-6 sm:p-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6 mb-8">
           <div>
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 border border-blue-100 text-blue-900 text-xs font-bold uppercase tracking-wider mb-3 shadow-sm">
               <span className="w-2 h-2 rounded-full bg-blue-900 animate-pulse"></span>
@@ -220,13 +259,6 @@ export default function StudentsPage() {
               UID cards.
             </p>
           </div>
-
-          <Link
-            href="/"
-            className="bg-white hover:bg-slate-100 text-slate-700 hover:text-blue-950 text-sm font-bold px-6 py-3 rounded-xl border border-slate-200 transition-all shadow-sm flex items-center gap-2"
-          >
-            ← Back to Operations
-          </Link>
         </div>
 
         {/* TWO COLUMN LAYOUT */}
@@ -378,7 +410,6 @@ export default function StudentsPage() {
               </div>
 
               <div className="flex flex-col sm:flex-row gap-3 w-full xl:w-auto">
-                {/* Hidden File Input for CSV */}
                 <input
                   type="file"
                   id="csv-upload"
@@ -387,7 +418,7 @@ export default function StudentsPage() {
                   onChange={handleFileUpload}
                 />
                 <button
-                  onClick={() => document.getElementById("csv-upload").click()}
+                  onClick={() => document.getElementById("csv-upload")?.click()}
                   className="bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold px-4 py-2.5 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
                   Upload CSV
@@ -446,7 +477,7 @@ export default function StudentsPage() {
                         Loading student registry...
                       </td>
                     </tr>
-                  ) : filteredStudents.length === 0 ? (
+                  ) : paginatedStudents.length === 0 ? (
                     <tr>
                       <td
                         colSpan={6}
@@ -456,9 +487,8 @@ export default function StudentsPage() {
                       </td>
                     </tr>
                   ) : (
-                    filteredStudents.map((s) => {
+                    paginatedStudents.map((s) => {
                       const isTarget = isScanMode && s.id === activeTargetId;
-
                       return (
                         <tr
                           key={s.id}
@@ -499,8 +529,8 @@ export default function StudentsPage() {
                           </td>
                           <td className="p-5 text-right">
                             <button
-                              onClick={() => handleDelete(s.id)}
-                              className="text-rose-600 hover:text-rose-700 text-xs font-bold bg-rose-50 hover:bg-rose-100 px-3.5 py-2 rounded-xl border border-rose-200 transition-all cursor-pointer shadow-sm"
+                              onClick={() => setTargetDeleteStudent(s)}
+                              className="text-rose-600 hover:text-white hover:bg-rose-600 text-xs font-bold bg-rose-50 px-3.5 py-2 rounded-xl border border-rose-200 transition-all cursor-pointer shadow-xs"
                             >
                               Delete
                             </button>
@@ -512,6 +542,22 @@ export default function StudentsPage() {
                 </tbody>
               </table>
             </div>
+
+            {/* Show More Pagination Button */}
+            {filteredStudents.length > visibleStudentsCount && (
+              <div className="p-6 bg-slate-50/80 border-t border-slate-100 text-center">
+                <button
+                  onClick={() => setVisibleStudentsCount((prev) => prev + 15)}
+                  className="bg-white hover:bg-slate-100 text-blue-900 border border-slate-200 font-bold px-8 py-3 rounded-xl shadow-sm transition-all text-sm cursor-pointer inline-flex items-center gap-2"
+                >
+                  <span>Show More Records</span>
+                  <span className="text-xs bg-blue-50 px-2.5 py-0.5 rounded-full text-blue-700 font-extrabold">
+                    Showing {paginatedStudents.length} of{" "}
+                    {filteredStudents.length}
+                  </span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
