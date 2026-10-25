@@ -89,7 +89,7 @@ export default function IoTSystemsHub() {
 
         {/* 3. Smart Room Occupancy - Teal Theme */}
         <a
-          href="https://your-occupancy-url.com"
+          href="https://room-occupancys2.netlify.app"
           target="_blank"
           rel="noopener noreferrer"
           className="group bg-[#faf9f6]/90 backdrop-blur-xl rounded-[2rem] p-8 border border-white/50 shadow-2xl hover:shadow-[0_20px_40px_-15px_rgba(13,148,136,0.3)] hover:border-teal-400 transition-all duration-300 hover:-translate-y-2 cursor-pointer flex flex-col items-center text-center relative overflow-hidden"
